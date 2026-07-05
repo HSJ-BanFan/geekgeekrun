@@ -8,7 +8,7 @@
     "ggr": "./bin/ggr.mjs"
   },
   "scripts": {
-    "check": "node --check bin/ggr.mjs && node --check src/config.mjs && node --check src/job-profile.mjs && node --check src/policy.mjs && node --check src/llm-evaluator.mjs && node --check src/browser-actions.mjs"
+    "check": "node --check bin/ggr.mjs && node --check src/config.mjs && node --check src/job-profile.mjs && node --check src/policy.mjs && node --check src/llm-evaluator.mjs && node --check src/browser-actions.mjs && node --check src/audit-log.mjs"
   },
   "dependencies": {
     "@geekgeekrun/geek-auto-start-chat-with-boss": "workspace:*",

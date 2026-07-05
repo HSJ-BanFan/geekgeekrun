@@ -43,6 +43,10 @@ export function getBrowserPath () {
   return fs.readFileSync(recordPath, 'utf8').trim().split(/\r?\n/)[0] ?? ''
 }
 
+export function getAuditLogPath () {
+  return path.join(storageFilePath, 'job-agent-audit.jsonl')
+}
+
 export function readBrowserState () {
   return {
     cookies: readStorageFile('boss-cookies.json'),

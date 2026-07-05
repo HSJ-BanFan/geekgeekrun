@@ -27,7 +27,7 @@
       "id": "uuid-provider",
       "name": "SiliconFlow",
       "baseURL": "https://api.siliconflow.cn/v1",
-      "apiKey": "sk-xxx",
+      "apiKey": "<redacted>",
       "models": [
         {
           "id": "uuid-model",
