@@ -322,6 +322,24 @@ const blockCompanyNameRegExp = (() => {
   }
 })()
 const blockCompanyNameRegMatchStrategy = readConfigFile('boss.json').blockCompanyNameRegMatchStrategy ?? MarkAsNotSuitOp.NO_OP
+const chatPageInputSelector = '.chat-conversation .message-controls .chat-input'
+const chatPageSendButtonSelector = '.chat-conversation .message-controls .chat-op .btn-send:not(.disabled)'
+const greetDialogSelector = '.greet-boss-dialog'
+const greetDialogInputSelector = 'textarea, input[type="text"], [contenteditable="true"], .chat-input'
+const greetDialogSendButtonSelector = '.greet-boss-footer .sure-btn, .greet-boss-footer .confirm-btn, .greet-boss-footer .btn-sure, .greet-boss-footer .btn-primary, .greet-boss-footer button:not(.cancel-btn)'
+
+async function waitForAutoStartGreetingSurface (timeout = 12000) {
+  const selector = [
+    chatPageInputSelector,
+    `${greetDialogSelector} textarea`,
+    `${greetDialogSelector} input[type="text"]`,
+    `${greetDialogSelector} [contenteditable="true"]`,
+    `${greetDialogSelector} .chat-input`,
+    `${greetDialogSelector} input[type="file"]`,
+    '.chat-conversation input[type="file"]',
+  ].join(', ')
+  return page.waitForSelector(selector, { timeout }).catch(() => null)
+}
 
 async function tryTypeText (elHandle, text) {
   await elHandle.click()
@@ -341,15 +359,13 @@ async function tryTypeText (elHandle, text) {
 }
 
 async function sendCustomGreetingInChatPage (message) {
-  const chatInputSelector = `.chat-conversation .message-controls .chat-input`
-  const chatInputHandle = await page.$(chatInputSelector)
+  const chatInputHandle = await page.$(chatPageInputSelector)
   if (!chatInputHandle) {
     return false
   }
   await tryTypeText(chatInputHandle, message)
   await sleep(500)
-  const sendButtonSelector = `.chat-conversation .message-controls .chat-op .btn-send:not(.disabled)`
-  const sendButtonHandle = await page.$(sendButtonSelector)
+  const sendButtonHandle = await page.$(chatPageSendButtonSelector)
   if (!sendButtonHandle) {
     return false
   }
@@ -359,21 +375,17 @@ async function sendCustomGreetingInChatPage (message) {
 }
 
 async function sendCustomGreetingInDialog (message) {
-  const dialogHandle = await page.$('.greet-boss-dialog')
+  const dialogHandle = await page.$(greetDialogSelector)
   if (!dialogHandle) {
     return false
   }
-  const inputHandle = await dialogHandle.$(
-    'textarea, input[type="text"], [contenteditable="true"], .chat-input'
-  )
+  const inputHandle = await dialogHandle.$(greetDialogInputSelector)
   if (!inputHandle) {
     return false
   }
   await tryTypeText(inputHandle, message)
   await sleep(500)
-  const sendButtonHandle = await dialogHandle.$(
-    '.greet-boss-footer .sure-btn, .greet-boss-footer .confirm-btn, .greet-boss-footer .btn-sure, .greet-boss-footer .btn-primary, .greet-boss-footer button:not(.cancel-btn)'
-  )
+  const sendButtonHandle = await dialogHandle.$(greetDialogSendButtonSelector)
   if (!sendButtonHandle) {
     return false
   }
@@ -410,8 +422,7 @@ async function sendCustomGreetingImageInChatPage (imagePath) {
   }
   await inputHandle.uploadFile(imagePath)
   await sleepWithRandomDelay(1500)
-  const sendButtonSelector = `.chat-conversation .message-controls .chat-op .btn-send:not(.disabled)`
-  const sendButtonHandle = await page.$(sendButtonSelector)
+  const sendButtonHandle = await page.$(chatPageSendButtonSelector)
   if (sendButtonHandle) {
     await sendButtonHandle.click()
     await sleepWithRandomDelay(1200)
@@ -420,15 +431,17 @@ async function sendCustomGreetingImageInChatPage (imagePath) {
 }
 
 async function sendCustomGreetingImageInDialog (imagePath) {
-  const inputHandle = await findImageUploadInput('.greet-boss-dialog')
+  const dialogHandle = await page.$(greetDialogSelector)
+  if (!dialogHandle) {
+    return false
+  }
+  const inputHandle = await findImageUploadInput(greetDialogSelector)
   if (!inputHandle) {
     return false
   }
   await inputHandle.uploadFile(imagePath)
   await sleepWithRandomDelay(1500)
-  const sendButtonHandle = await page.$(
-    '.greet-boss-dialog .greet-boss-footer .sure-btn, .greet-boss-dialog .greet-boss-footer .confirm-btn, .greet-boss-dialog .greet-boss-footer .btn-sure, .greet-boss-dialog .greet-boss-footer .btn-primary, .greet-boss-dialog .greet-boss-footer button:not(.cancel-btn)'
-  )
+  const sendButtonHandle = await dialogHandle.$(greetDialogSendButtonSelector)
   if (sendButtonHandle) {
     await sendButtonHandle.click()
     await sleepWithRandomDelay(1200)
@@ -440,6 +453,7 @@ async function sendAutoStartChatGreetingIfNeeded () {
   if (!autoStartChatGreetingMessage && !autoStartChatGreetingImagePath) {
     return false
   }
+  await waitForAutoStartGreetingSurface()
   let sentAny = false
   try {
     if (
