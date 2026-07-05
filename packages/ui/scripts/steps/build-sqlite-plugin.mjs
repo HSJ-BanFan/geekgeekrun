@@ -9,13 +9,19 @@ export default function buildSqlitePlugin() {
   const sqlitePluginDirPath = path.join(__dirname, '../../../sqlite-plugin')
   process.chdir(sqlitePluginDirPath)
   try {
-    const sqlitePluginBuildProcess = childProcess.spawnSync('pnpm run build', {
+    const pnpmCommand = process.env.npm_execpath
+      ? `"${process.execPath}" "${process.env.npm_execpath}" run build`
+      : 'pnpm run build'
+    const sqlitePluginBuildProcess = childProcess.spawnSync(pnpmCommand, {
       stdio: ['inherit', 'inherit', 'inherit'],
       shell: true
     })
     process.chdir(rawCwd)
     if (sqlitePluginBuildProcess.error) {
       throw sqlitePluginBuildProcess.error
+    }
+    if (sqlitePluginBuildProcess.status !== 0) {
+      process.exit(sqlitePluginBuildProcess.status ?? 1)
     }
   } catch (error) {
     process.chdir(rawCwd)

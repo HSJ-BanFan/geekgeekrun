@@ -51,6 +51,7 @@ import { daemonEE, sendToDaemon } from '../connect-to-daemon'
 import { runCommon } from '../../../features/run-common'
 import { loginWithCookieAssistant } from '../../../features/login-with-cookie-assistant'
 import { configWithBrowserAssistant } from '../../../features/config-with-browser-assistant'
+import { electronSubprocessArgs } from '../../../utils/electronSubprocessArgs'
 import {
   createFirstLaunchNoticeApproveFlag,
   isFirstLaunchNoticeApproveFlagExist,
@@ -362,9 +363,7 @@ export default function initIpc() {
       }
       subProcessOfOpenBossSite = childProcess.spawn(
         process.argv[0],
-        process.env.NODE_ENV === 'development'
-          ? [process.argv[1], `--mode=launchBossSite`]
-          : [`--mode=launchBossSite`],
+        electronSubprocessArgs(`--mode=launchBossSite`),
         {
           env: subProcessEnv,
           stdio: ['inherit', 'inherit', 'inherit', 'pipe']
@@ -829,9 +828,7 @@ export default function initIpc() {
     bossChatDebugReadyDefer = Promise.withResolvers()
     bossChatDebugProcess = childProcess.spawn(
       process.argv[0],
-      process.env.NODE_ENV === 'development'
-        ? [process.argv[1], '--mode=bossChatDebugMain']
-        : ['--mode=bossChatDebugMain'],
+      electronSubprocessArgs('--mode=bossChatDebugMain'),
       {
         env: { ...process.env, PUPPETEER_EXECUTABLE_PATH: puppeteerExecutable.executablePath, GEEKGEEKRUND_PIPE_NAME: process.env.GEEKGEEKRUND_PIPE_NAME },
         stdio: ['inherit', 'inherit', 'inherit', 'pipe', 'pipe']

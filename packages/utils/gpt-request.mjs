@@ -47,6 +47,7 @@ export async function completes(
     model,
     max_tokens: resolvedMaxTokens,
     temperature: resolvedTemperature,
+    stream: false,
   }
 
   if (isThinking) {

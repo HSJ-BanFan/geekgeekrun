@@ -18,9 +18,9 @@ import {
   checkAnyCombineBossRecommendFilterHasCondition,
   formatStaticCombineFilters,
 } from './combineCalculator.mjs'
-import { default as jobFilterConditions } from './internal-config/job-filter-conditions-20241002.json'
-import { default as rawIndustryFilterExemption } from './internal-config/job-filter-industry-filter-exemption-20241002.json'
-import { ChatStartupFrom } from '@geekgeekrun/sqlite-plugin/dist/entity/ChatStartupLog'
+import { default as jobFilterConditions } from './internal-config/job-filter-conditions-20241002.json' with { type: 'json' }
+import { default as rawIndustryFilterExemption } from './internal-config/job-filter-industry-filter-exemption-20241002.json' with { type: 'json' }
+import { ChatStartupFrom } from '@geekgeekrun/sqlite-plugin/dist/entity/ChatStartupLog.js'
 import {
   MarkAsNotSuitReason,
   MarkAsNotSuitOp,
@@ -29,14 +29,14 @@ import {
   JobDetailRegExpMatchLogic,
   JobSource,
   CombineRecommendJobFilterType
-} from '@geekgeekrun/sqlite-plugin/dist/enums'
+} from '@geekgeekrun/sqlite-plugin/dist/enums.js'
 import {
   activeDescList,
   RECOMMEND_JOB_ENTRY_SELECTOR,
   USER_SET_EXPECT_JOB_ENTRIES_SELECTOR,
   SEARCH_BOX_SELECTOR,
 } from './constant.mjs'
-import { parseSalary } from "@geekgeekrun/sqlite-plugin/dist/utils/parser"
+import { parseSalary } from "@geekgeekrun/sqlite-plugin/dist/utils/parser.js"
 import { waitForSageTimeOrJustContinue } from './sage-time.mjs'
 import cityGroupData from './cityGroup.mjs'
 import { hasIntersection } from '@geekgeekrun/utils/number.mjs';
@@ -205,6 +205,28 @@ const jobNotActiveStrategy = (() => {
   }
   return value
 })()
+const autoStartChatGreetingMessage = (() => {
+  const config = readConfigFile('boss.json')
+  if (config.autoStartChatGreetingEnabled === false) {
+    return ''
+  }
+  return String(config.autoStartChatGreetingMessage ?? '').trim()
+})()
+const autoStartChatGreetingImagePath = (() => {
+  const config = readConfigFile('boss.json')
+  if (config.autoStartChatGreetingImageEnabled === false) {
+    return ''
+  }
+  const imagePath = String(config.autoStartChatGreetingImagePath ?? '').trim()
+  if (!imagePath) {
+    return ''
+  }
+  if (!fs.existsSync(imagePath)) {
+    console.log('custom auto-start greeting image does not exist', imagePath)
+    return ''
+  }
+  return imagePath
+})()
 
 let {
   expectJobNameRegExpStr,
@@ -300,6 +322,163 @@ const blockCompanyNameRegExp = (() => {
   }
 })()
 const blockCompanyNameRegMatchStrategy = readConfigFile('boss.json').blockCompanyNameRegMatchStrategy ?? MarkAsNotSuitOp.NO_OP
+
+async function tryTypeText (elHandle, text) {
+  await elHandle.click()
+  await sleep(200)
+  await elHandle.evaluate((el) => {
+    if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+      el.value = ''
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+      return
+    }
+    if (el instanceof HTMLElement && el.isContentEditable) {
+      el.innerText = ''
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }))
+    }
+  })
+  await elHandle.type(text, { delay: 15 })
+}
+
+async function sendCustomGreetingInChatPage (message) {
+  const chatInputSelector = `.chat-conversation .message-controls .chat-input`
+  const chatInputHandle = await page.$(chatInputSelector)
+  if (!chatInputHandle) {
+    return false
+  }
+  await tryTypeText(chatInputHandle, message)
+  await sleep(500)
+  const sendButtonSelector = `.chat-conversation .message-controls .chat-op .btn-send:not(.disabled)`
+  const sendButtonHandle = await page.$(sendButtonSelector)
+  if (!sendButtonHandle) {
+    return false
+  }
+  await sendButtonHandle.click()
+  await sleepWithRandomDelay(1200)
+  return true
+}
+
+async function sendCustomGreetingInDialog (message) {
+  const dialogHandle = await page.$('.greet-boss-dialog')
+  if (!dialogHandle) {
+    return false
+  }
+  const inputHandle = await dialogHandle.$(
+    'textarea, input[type="text"], [contenteditable="true"], .chat-input'
+  )
+  if (!inputHandle) {
+    return false
+  }
+  await tryTypeText(inputHandle, message)
+  await sleep(500)
+  const sendButtonHandle = await dialogHandle.$(
+    '.greet-boss-footer .sure-btn, .greet-boss-footer .confirm-btn, .greet-boss-footer .btn-sure, .greet-boss-footer .btn-primary, .greet-boss-footer button:not(.cancel-btn)'
+  )
+  if (!sendButtonHandle) {
+    return false
+  }
+  await sendButtonHandle.click()
+  await sleepWithRandomDelay(1200)
+  return true
+}
+
+async function findImageUploadInput (scopeSelector) {
+  const inputHandles = await page.$$(`${scopeSelector} input[type="file"]`)
+  for (const inputHandle of inputHandles) {
+    const canUploadImage = await inputHandle.evaluate((el) => {
+      const accept = (el.getAttribute('accept') || '').toLowerCase()
+      return (
+        !accept ||
+        accept.includes('image') ||
+        accept.includes('png') ||
+        accept.includes('jpg') ||
+        accept.includes('jpeg') ||
+        accept.includes('*')
+      )
+    }).catch(() => false)
+    if (canUploadImage) {
+      return inputHandle
+    }
+  }
+  return null
+}
+
+async function sendCustomGreetingImageInChatPage (imagePath) {
+  const inputHandle = await findImageUploadInput('.chat-conversation')
+  if (!inputHandle) {
+    return false
+  }
+  await inputHandle.uploadFile(imagePath)
+  await sleepWithRandomDelay(1500)
+  const sendButtonSelector = `.chat-conversation .message-controls .chat-op .btn-send:not(.disabled)`
+  const sendButtonHandle = await page.$(sendButtonSelector)
+  if (sendButtonHandle) {
+    await sendButtonHandle.click()
+    await sleepWithRandomDelay(1200)
+  }
+  return true
+}
+
+async function sendCustomGreetingImageInDialog (imagePath) {
+  const inputHandle = await findImageUploadInput('.greet-boss-dialog')
+  if (!inputHandle) {
+    return false
+  }
+  await inputHandle.uploadFile(imagePath)
+  await sleepWithRandomDelay(1500)
+  const sendButtonHandle = await page.$(
+    '.greet-boss-dialog .greet-boss-footer .sure-btn, .greet-boss-dialog .greet-boss-footer .confirm-btn, .greet-boss-dialog .greet-boss-footer .btn-sure, .greet-boss-dialog .greet-boss-footer .btn-primary, .greet-boss-dialog .greet-boss-footer button:not(.cancel-btn)'
+  )
+  if (sendButtonHandle) {
+    await sendButtonHandle.click()
+    await sleepWithRandomDelay(1200)
+  }
+  return true
+}
+
+async function sendAutoStartChatGreetingIfNeeded () {
+  if (!autoStartChatGreetingMessage && !autoStartChatGreetingImagePath) {
+    return false
+  }
+  let sentAny = false
+  try {
+    if (
+      autoStartChatGreetingMessage &&
+      await sendCustomGreetingInChatPage(autoStartChatGreetingMessage)
+    ) {
+      console.log('custom auto-start greeting sent in chat page')
+      sentAny = true
+    }
+    else if (
+      autoStartChatGreetingMessage &&
+      await sendCustomGreetingInDialog(autoStartChatGreetingMessage)
+    ) {
+      console.log('custom auto-start greeting sent in greet dialog')
+      sentAny = true
+    }
+    if (
+      autoStartChatGreetingImagePath &&
+      await sendCustomGreetingImageInChatPage(autoStartChatGreetingImagePath)
+    ) {
+      console.log('custom auto-start greeting image sent in chat page')
+      sentAny = true
+    }
+    else if (
+      autoStartChatGreetingImagePath &&
+      await sendCustomGreetingImageInDialog(autoStartChatGreetingImagePath)
+    ) {
+      console.log('custom auto-start greeting image sent in greet dialog')
+      sentAny = true
+    }
+  }
+  catch (err) {
+    console.log('send custom auto-start greeting failed', err?.message ?? err)
+  }
+  if (!sentAny) {
+    console.log('custom auto-start greeting is configured, but no supported input was found')
+  }
+  return sentAny
+}
 
 /**
  * @type { import('puppeteer').Browser }
@@ -1565,6 +1744,7 @@ async function toRecommendPage (hooks) {
 
             await storeStorage(page).catch(() => void 0)
             await sleepWithRandomDelay(1500)
+            const customGreetingSent = await sendAutoStartChatGreetingIfNeeded()
             if (hasGoToChatPage) {
               await page.goBack()
               await page.waitForFunction(() => {
@@ -1573,7 +1753,7 @@ async function toRecommendPage (hooks) {
               await sleepWithRandomDelay(2000)
             }
             const closeDialogButtonProxy = await page.$('.greet-boss-dialog .greet-boss-footer .cancel-btn')
-            if (closeDialogButtonProxy) {
+            if (closeDialogButtonProxy && !customGreetingSent) {
               await closeDialogButtonProxy.click()
               await sleepWithRandomDelay(2000)
             }

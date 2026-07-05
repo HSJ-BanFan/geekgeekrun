@@ -1,8 +1,8 @@
-import { resolve } from 'path'
 import { AUTO_CHAT_ERROR_EXIT_CODE } from '../../common/enums/auto-start-chat'
 import { daemonEE, sendToDaemon } from '../flow/OPEN_SETTING_WINDOW/connect-to-daemon'
 import { saveAndGetCurrentRunRecord } from '../flow/OPEN_SETTING_WINDOW/utils/db'
 import minimist from 'minimist'
+import { electronSubprocessArgs } from '../utils/electronSubprocessArgs'
 
 export async function runCommon({ mode }) {
   await sendToDaemon(
@@ -42,10 +42,10 @@ export async function runCommon({ mode }) {
       AUTO_CHAT_ERROR_EXIT_CODE.LLM_UNAVAILABLE
     ].join(',')
   }
-  const args =
-    process.env.NODE_ENV === 'development'
-      ? [resolve(process.argv[1]), `--mode=${mode}`, `--run-record-id=${currentRunRecord?.id || 0}`]
-      : [`--mode=${mode}`, `--run-record-id=${currentRunRecord?.id || 0}`]
+  const args = electronSubprocessArgs(
+    `--mode=${mode}`,
+    `--run-record-id=${currentRunRecord?.id || 0}`
+  )
   await sendToDaemon(
     {
       type: 'start-worker',

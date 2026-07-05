@@ -1,5 +1,4 @@
 import { spawn } from 'child_process'
-import { resolve } from 'path'
 import {
   ensureStorageFileExist,
   writeStorageFile,
@@ -7,6 +6,7 @@ import {
 } from '@geekgeekrun/geek-auto-start-chat-with-boss/runtime-file-utils.mjs'
 import { randomUUID } from 'node:crypto'
 import { connectToDaemon } from './connect-to-daemon'
+import { electronSubprocessArgs } from '../../utils/electronSubprocessArgs'
 
 export async function ensureIpcPipeName({ isReset } = {}) {
   if (isReset) {
@@ -29,9 +29,7 @@ export async function launchDaemon() {
     // 添加参数使守护进程在后台运行，不显示 UI
     daemonProcess = spawn(
       process.argv[0],
-      process.env.NODE_ENV === 'development'
-        ? [resolve(process.argv[1]), `--mode=launchDaemon`]
-        : [`--mode=launchDaemon`],
+      electronSubprocessArgs(`--mode=launchDaemon`),
       {
         stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
         detached: true,
