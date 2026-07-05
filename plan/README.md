@@ -39,6 +39,7 @@
 | 文档 | 说明 |
 |------|------|
 | [webhook_integration.md](webhook_integration.md) | Webhook：配置、Payload、相关源码路径、与任务结束时的发送时机。 |
+| [job_agent_cli_prd.md](job_agent_cli_prd.md) | 求职端 Agent CLI 改造 PRD：能力封装、JD 判断、投递闭环、审计与后续计划。 |
 | [multi-job-switching.md](multi-job_switching.md) | 多职位同步、`boss-jobs-config.json`、按职位配置与顺序执行的设计草案。 |
 
 ---
