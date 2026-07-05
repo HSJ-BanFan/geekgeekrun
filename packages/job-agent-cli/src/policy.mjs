@@ -52,6 +52,7 @@ export function selectGreeting (job, bossConfig) {
 export function evaluateJobWithRules (job, bossConfig) {
   const text = jobText(job)
   const hardReject = findHardReject(job, text)
+  const techStackAssessment = assessRejectedTechStack(job, text)
   const configuredRegexResult = testConfiguredRegex(job, bossConfig)
   const category = inferCategory(text)
   const keywordMatch = matchConfiguredKeyword(job, bossConfig)
@@ -61,6 +62,9 @@ export function evaluateJobWithRules (job, bossConfig) {
 
   const reasons = []
   if (hardReject) reasons.push(`hard reject pattern matched: ${hardReject.match}`)
+  if (techStackAssessment.requiresLlm) {
+    reasons.push(`tech stack requires llm assessment: ${techStackAssessment.terms.join(', ')}`)
+  }
   if (!configuredRegexResult.pass) reasons.push(configuredRegexResult.reason)
   if (!category) reasons.push('no supported category matched')
   if (keywordMatch.keyword) reasons.push(`matched source keyword: ${keywordMatch.keyword}`)
@@ -75,11 +79,14 @@ export function evaluateJobWithRules (job, bossConfig) {
   if (job.salary) score += 5
   if (hardReject || !configuredRegexResult.pass || !category) score = Math.min(score, 30)
 
-  const decision = hardReject || !configuredRegexResult.pass || !category
-    ? 'skip'
-    : score >= 65
-      ? 'apply'
-      : 'uncertain'
+  let decision = 'uncertain'
+  if (hardReject || !configuredRegexResult.pass || !category) {
+    decision = 'skip'
+  } else if (techStackAssessment.requiresLlm) {
+    decision = 'uncertain'
+  } else if (score >= 65) {
+    decision = 'apply'
+  }
 
   return {
     decision,
@@ -89,20 +96,31 @@ export function evaluateJobWithRules (job, bossConfig) {
     configuredRegex: configuredRegexResult,
     jdMatch: jdMatches,
     remoteFit,
+    techStackAssessment,
     greetingTemplate: greeting.rule,
     greetingMessage: greeting.message,
     resumeImagePath: getResumeImagePath(bossConfig),
     reasons,
-    presetTasks: buildPresetTasks({ decision, greeting, bossConfig }),
+    presetTasks: buildPresetTasks({ decision, greeting, bossConfig, techStackAssessment }),
   }
 }
 
-function buildPresetTasks ({ decision, greeting, bossConfig }) {
+function buildPresetTasks ({ decision, greeting, bossConfig, techStackAssessment }) {
   if (decision === 'skip') {
     return [{ type: 'mark_not_suit', dryRun: true }]
   }
   if (decision === 'uncertain') {
-    return [{ type: 'manual_review', dryRun: true }]
+    const tasks = []
+    if (techStackAssessment?.requiresLlm) {
+      tasks.push({
+        type: 'evaluate_job_llm',
+        reason: 'rejected_tech_stack_assessment_required',
+        terms: techStackAssessment.terms,
+        dryRun: true,
+      })
+    }
+    tasks.push({ type: 'manual_review', dryRun: true })
+    return tasks
   }
   const tasks = [
     { type: 'start_chat', dryRun: true },
@@ -122,24 +140,76 @@ function inferCategory (text) {
 function findHardReject (job, text) {
   const nonTechReject = hardRejectPattern.exec(text)
   if (nonTechReject) return { match: nonTechReject[0], type: 'job_type' }
-  return findRejectedTechStackRequirement(job, text)
+  return null
 }
 
-function findRejectedTechStackRequirement (job, text) {
-  const titleMatch = rejectedTechStackPattern.exec(job.title ?? '')
-  if (titleMatch) {
-    return { match: titleMatch[0], type: 'tech_stack_title' }
+function assessRejectedTechStack (job, text) {
+  const evidence = []
+  for (const term of findRejectedTechStackTerms(job.title ?? '')) {
+    evidence.push({
+      term,
+      segment: job.title,
+      context: 'title',
+    })
   }
 
   for (const segment of splitRequirementSegments(text)) {
-    const stackMatch = rejectedTechStackPattern.exec(segment)
-    if (!stackMatch) continue
-    if (isOptionalOrBackgroundTechStackMention(segment)) continue
-    if (requiredTechStackContextPattern.test(segment) || hasMultipleRejectedTechStackSignals(segment)) {
-      return { match: stackMatch[0], type: 'tech_stack_requirement' }
+    for (const term of findRejectedTechStackTerms(segment)) {
+      evidence.push({
+        term,
+        segment,
+        context: classifyTechStackMention(segment),
+      })
     }
   }
-  return null
+
+  const dedupedEvidence = dedupeTechStackEvidence(evidence)
+  const terms = [...new Set(dedupedEvidence.map(item => item.term))]
+  return {
+    requiresLlm: terms.length > 0,
+    terms,
+    preliminaryVerdict: getPreliminaryTechStackVerdict(dedupedEvidence),
+    evidence: dedupedEvidence,
+    instruction: terms.length
+      ? 'LLM must explain whether rejected stack terms are core/required skills or only optional/background mentions.'
+      : '',
+  }
+}
+
+function findRejectedTechStackTerms (text) {
+  const regex = new RegExp(rejectedTechStackPattern.source, 'ig')
+  return [...String(text ?? '').matchAll(regex)].map(match => match[0])
+}
+
+function classifyTechStackMention (segment) {
+  if (isOptionalOrBackgroundTechStackMention(segment)) return 'optional_or_background'
+  if (requiredTechStackContextPattern.test(segment) || hasMultipleRejectedTechStackSignals(segment)) {
+    return 'requirement_like'
+  }
+  return 'mentioned'
+}
+
+function dedupeTechStackEvidence (evidence) {
+  const seen = new Set()
+  const result = []
+  for (const item of evidence) {
+    const key = `${item.term}\n${item.segment}\n${item.context}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(item)
+  }
+  return result
+}
+
+function getPreliminaryTechStackVerdict (evidence) {
+  if (!evidence.length) return 'none'
+  if (evidence.some(item => item.context === 'title' || item.context === 'requirement_like')) {
+    return 'possible_core_or_required'
+  }
+  if (evidence.every(item => item.context === 'optional_or_background')) {
+    return 'likely_optional_or_background'
+  }
+  return 'mentioned'
 }
 
 function splitRequirementSegments (text) {

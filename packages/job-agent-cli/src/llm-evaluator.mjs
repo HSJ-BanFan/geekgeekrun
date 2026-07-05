@@ -23,8 +23,13 @@ export async function evaluateJobWithLlm ({ job, ruleEvaluation, llmConfig }) {
         'For internships and junior roles, apply when the JD overlaps with the configured target directions and no hard reject appears.',
         'Treat ruleEvaluation.decision as a strong prior. Only downgrade apply when the JD clearly violates reject constraints or is outside the target directions.',
         'Reject Java/J2EE/Spring/MyBatis roles when that stack is the title, core responsibility, or required skill. Do not reject only because Java/Spring/MyBatis appears as optional, bonus, background, department context, or integration context.',
+        'When ruleEvaluation.techStackAssessment.requiresLlm is true, you must explicitly decide whether each mentioned rejected stack term is core/required or only optional/background.',
+        'Treat phrases like 岗位要求, 任职要求, 要求, 必须, 熟悉, 掌握, 具备, 使用, 开发, 技术栈, 经验 next to Java/J2EE/Spring/MyBatis as evidence that the stack is required unless the same segment explicitly says 加分, 优先, 了解, 不要求, 不需要, 不涉及, or optional/background.',
+        'The Chinese phrase "岗位要求熟悉 Java/Spring/MyBatis" means the rejected stack is required; it is not optional.',
+        'If Java/J2EE/Spring/MyBatis is core or required, decision must be skip. If those terms are only optional/background, do not reject for that reason.',
         'Reject data annotation, info entry, content audit, sales/customer service, live-stream operations, and no-tech AI training roles.',
-        'Return strict JSON with keys: decision, score, category, reason, matched_requirements, missing_requirements, risk_flags.',
+        'Return strict JSON with keys: decision, score, category, reason, matched_requirements, missing_requirements, risk_flags, tech_stack_assessment.',
+        'tech_stack_assessment must be an object with keys: terms, is_core_required, evidence, explanation. Use is_core_required true when rejected stack is core/required, false when only optional/background, and null when no rejected stack terms are present.',
         'decision must be one of apply, skip, uncertain.',
       ].join('\n'),
     },
@@ -43,7 +48,7 @@ export async function evaluateJobWithLlm ({ job, ruleEvaluation, llmConfig }) {
             'remote/online/work-from-home roles are preferred',
           ],
           rejectDirections: [
-            'Java/J2EE/Spring/MyBatis',
+            'Java/J2EE/Spring/MyBatis only when core responsibility or required skill',
             'data annotation, info entry, content audit',
             'sales/customer service/live-stream operations/promotion',
             'no-tech AI training or evaluation work',
@@ -63,8 +68,41 @@ export async function evaluateJobWithLlm ({ job, ruleEvaluation, llmConfig }) {
 
 function normalizeJsonContent (content) {
   const text = String(content ?? '').trim()
-  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(text)
-  return fenced ? fenced[1].trim() : text
+  const fenced = /```(?:json)?\s*([\s\S]*?)\s*```/i.exec(text)
+  const candidate = fenced ? fenced[1].trim() : text
+  return extractFirstJsonObject(candidate) ?? candidate
+}
+
+function extractFirstJsonObject (text) {
+  const source = String(text ?? '')
+  const start = source.indexOf('{')
+  if (start < 0) return null
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let index = start; index < source.length; index++) {
+    const char = source[index]
+    if (inString) {
+      if (escaped) {
+        escaped = false
+      } else if (char === '\\') {
+        escaped = true
+      } else if (char === '"') {
+        inString = false
+      }
+      continue
+    }
+    if (char === '"') {
+      inString = true
+      continue
+    }
+    if (char === '{') depth += 1
+    if (char === '}') {
+      depth -= 1
+      if (depth === 0) return source.slice(start, index + 1)
+    }
+  }
+  return null
 }
 
 function sanitizeRuleEvaluation (ruleEvaluation) {

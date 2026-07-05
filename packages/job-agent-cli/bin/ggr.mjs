@@ -298,6 +298,37 @@ function resolveFinalDecision (ruleEvaluation, llmEvaluation) {
   const llmDecision = typeof llmEvaluation?.decision === 'string'
     ? llmEvaluation.decision.trim().toLowerCase()
     : ''
+  if (ruleEvaluation?.techStackAssessment?.requiresLlm) {
+    const llmTechStackAssessment = getLlmTechStackAssessment(llmEvaluation)
+    if (!llmEvaluation || llmEvaluation.skipped) {
+      return {
+        decision: 'uncertain',
+        source: 'rules',
+        reason: 'llm tech stack assessment required before auto-apply',
+      }
+    }
+    if (typeof llmTechStackAssessment?.is_core_required !== 'boolean') {
+      return {
+        decision: 'uncertain',
+        source: 'llm',
+        reason: 'llm did not explain whether rejected tech stack is core/required',
+      }
+    }
+    if (llmTechStackAssessment.is_core_required) {
+      return {
+        decision: 'skip',
+        source: 'llm',
+        reason: 'llm identified rejected tech stack as core/required',
+      }
+    }
+    if (!['apply', 'skip', 'uncertain'].includes(llmDecision)) {
+      return {
+        decision: 'uncertain',
+        source: 'llm',
+        reason: 'llm tech stack assessment passed but decision is missing or invalid',
+      }
+    }
+  }
   if (['apply', 'skip', 'uncertain'].includes(llmDecision)) {
     return {
       decision: llmDecision,
@@ -310,6 +341,10 @@ function resolveFinalDecision (ruleEvaluation, llmEvaluation) {
     source: 'rules',
     reason: llmEvaluation?.skipped ? llmEvaluation.reason : 'no llm decision',
   }
+}
+
+function getLlmTechStackAssessment (llmEvaluation) {
+  return llmEvaluation?.tech_stack_assessment ?? llmEvaluation?.techStackAssessment ?? null
 }
 
 function readJsonFile (filePath) {
