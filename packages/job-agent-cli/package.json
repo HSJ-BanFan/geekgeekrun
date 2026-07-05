@@ -1,0 +1,23 @@
+{
+  "name": "@geekgeekrun/job-agent-cli",
+  "private": true,
+  "version": "0.1.0",
+  "description": "JSON-first CLI tools for job evaluation and controlled BOSS actions",
+  "type": "module",
+  "bin": {
+    "ggr": "./bin/ggr.mjs"
+  },
+  "scripts": {
+    "check": "node --check bin/ggr.mjs && node --check src/config.mjs && node --check src/job-profile.mjs && node --check src/policy.mjs && node --check src/llm-evaluator.mjs && node --check src/browser-actions.mjs"
+  },
+  "dependencies": {
+    "@geekgeekrun/geek-auto-start-chat-with-boss": "workspace:*",
+    "@geekgeekrun/puppeteer-extra-plugin-laodeng": "workspace:*",
+    "@geekgeekrun/utils": "workspace:*",
+    "minimist": "^1.2.8",
+    "puppeteer": "24.19.0",
+    "puppeteer-extra": "3.3.6",
+    "puppeteer-extra-plugin-anonymize-ua": "2.4.6",
+    "puppeteer-extra-plugin-stealth": "2.11.2"
+  }
+}
