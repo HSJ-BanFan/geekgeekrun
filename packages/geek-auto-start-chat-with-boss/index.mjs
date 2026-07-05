@@ -212,6 +212,19 @@ const autoStartChatGreetingMessage = (() => {
   }
   return String(config.autoStartChatGreetingMessage ?? '').trim()
 })()
+const autoStartChatGreetingMessageRules = (() => {
+  const config = readConfigFile('boss.json')
+  if (!Array.isArray(config.autoStartChatGreetingMessageRules)) {
+    return []
+  }
+  return config.autoStartChatGreetingMessageRules
+    .map(rule => ({
+      name: String(rule?.name ?? '').trim(),
+      pattern: String(rule?.pattern ?? '').trim(),
+      message: String(rule?.message ?? '').trim(),
+    }))
+    .filter(rule => rule.pattern && rule.message)
+})()
 const autoStartChatGreetingImagePath = (() => {
   const config = readConfigFile('boss.json')
   if (config.autoStartChatGreetingImageEnabled === false) {
@@ -322,6 +335,7 @@ const blockCompanyNameRegExp = (() => {
   }
 })()
 const blockCompanyNameRegMatchStrategy = readConfigFile('boss.json').blockCompanyNameRegMatchStrategy ?? MarkAsNotSuitOp.NO_OP
+const rotateJobSourceAfterChatStartup = readConfigFile('boss.json').rotateJobSourceAfterChatStartup !== false
 const chatPageInputSelector = '.chat-conversation .message-controls .chat-input'
 const chatPageSendButtonSelector = '.chat-conversation .message-controls .chat-op .btn-send:not(.disabled)'
 const greetDialogSelector = '.greet-boss-dialog'
@@ -339,6 +353,41 @@ async function waitForAutoStartGreetingSurface (timeout = 12000) {
     '.chat-conversation input[type="file"]',
   ].join(', ')
   return page.waitForSelector(selector, { timeout }).catch(() => null)
+}
+
+function getJobTextForGreetingRule (positionInfoDetail) {
+  const jobInfo = positionInfoDetail?.jobInfo ?? {}
+  const bossInfo = positionInfoDetail?.bossInfo ?? {}
+  return [
+    jobInfo.jobName,
+    jobInfo.title,
+    jobInfo.positionName,
+    jobInfo.positionType,
+    jobInfo.brandName,
+    jobInfo.jobLabels?.join?.(' '),
+    jobInfo.skills?.join?.(' '),
+    jobInfo.postDescription,
+    positionInfoDetail?.brandName,
+    positionInfoDetail?.jobName,
+    positionInfoDetail?.title,
+    bossInfo.title,
+  ].filter(Boolean).join('\n')
+}
+
+function selectAutoStartChatGreetingMessage (positionInfoDetail) {
+  const jobText = getJobTextForGreetingRule(positionInfoDetail)
+  for (const rule of autoStartChatGreetingMessageRules) {
+    try {
+      if (new RegExp(rule.pattern, 'im').test(jobText)) {
+        console.log(`custom auto-start greeting rule matched: ${rule.name || rule.pattern}`)
+        return rule.message
+      }
+    }
+    catch (err) {
+      console.log('invalid custom auto-start greeting rule pattern', rule.pattern, err?.message ?? err)
+    }
+  }
+  return autoStartChatGreetingMessage
 }
 
 async function tryTypeText (elHandle, text) {
@@ -449,23 +498,24 @@ async function sendCustomGreetingImageInDialog (imagePath) {
   return true
 }
 
-async function sendAutoStartChatGreetingIfNeeded () {
-  if (!autoStartChatGreetingMessage && !autoStartChatGreetingImagePath) {
+async function sendAutoStartChatGreetingIfNeeded (positionInfoDetail) {
+  const message = selectAutoStartChatGreetingMessage(positionInfoDetail)
+  if (!message && !autoStartChatGreetingImagePath) {
     return false
   }
   await waitForAutoStartGreetingSurface()
   let sentAny = false
   try {
     if (
-      autoStartChatGreetingMessage &&
-      await sendCustomGreetingInChatPage(autoStartChatGreetingMessage)
+      message &&
+      await sendCustomGreetingInChatPage(message)
     ) {
       console.log('custom auto-start greeting sent in chat page')
       sentAny = true
     }
     else if (
-      autoStartChatGreetingMessage &&
-      await sendCustomGreetingInDialog(autoStartChatGreetingMessage)
+      message &&
+      await sendCustomGreetingInDialog(message)
     ) {
       console.log('custom auto-start greeting sent in greet dialog')
       sentAny = true
@@ -991,6 +1041,7 @@ async function toRecommendPage (hooks) {
   }
 
   let currentSourceIndex = 0
+  let currentFilterConditionStartIndex = 0
   afterPageLoad: while (true) {
     // check set security question tip modal
     let setSecurityQuestionTipModelProxy
@@ -1012,10 +1063,18 @@ async function toRecommendPage (hooks) {
       }
     }
 
-    const filterConditions =
+    let filterConditions =
       combineRecommendJobFilterType === CombineRecommendJobFilterType.STATIC_COMBINE
         ? formatStaticCombineFilters(staticCombineRecommendJobFilterConditions)
           : combineFiltersWithConstraintsGenerator(anyCombineRecommendJobFilter)
+    filterConditions = Array.from(filterConditions)
+    if (filterConditions.length && currentFilterConditionStartIndex > 0) {
+      const offset = currentFilterConditionStartIndex % filterConditions.length
+      filterConditions = [
+        ...filterConditions.slice(offset),
+        ...filterConditions.slice(0, offset),
+      ]
+    }
     let expectJobList
     let filterConditionIndex = -1
     iterateFilterCondition: for (
@@ -1758,7 +1817,7 @@ async function toRecommendPage (hooks) {
 
             await storeStorage(page).catch(() => void 0)
             await sleepWithRandomDelay(1500)
-            const customGreetingSent = await sendAutoStartChatGreetingIfNeeded()
+            const customGreetingSent = await sendAutoStartChatGreetingIfNeeded(targetJobData)
             if (hasGoToChatPage) {
               await page.goBack()
               await page.waitForFunction(() => {
@@ -1836,6 +1895,13 @@ async function toRecommendPage (hooks) {
             else {
               throw err
             }
+          }
+          if (rotateJobSourceAfterChatStartup) {
+            if (computedSourceList.length > 1) {
+              currentSourceIndex = (currentSourceIndex + 1) % computedSourceList.length
+            }
+            currentFilterConditionStartIndex += 1
+            continue afterPageLoad
           }
         } catch (err) {
           if (err instanceof Error) {
