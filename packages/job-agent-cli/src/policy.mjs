@@ -1,7 +1,11 @@
 import { getDefaultGreeting, getEnabledSearchKeywords, getGreetingRules, getResumeImagePath } from './config.mjs'
 import { jobText } from './job-profile.mjs'
 
-const hardRejectPattern = /Java|J2EE|Spring\s*Boot|SpringBoot|Spring|MyBatis|信息录入|录入员|纯兼职|运营跟播|跟播|内容审核|审核专员|AI内容|内容测评|文案撰写|销售|客服|主播|带货|推广|运营助理|数据标注|标注员|AI训练师|数据采集员|数据清洗员/i
+const hardRejectPattern = /信息录入|录入员|纯兼职|运营跟播|跟播|内容审核|审核专员|AI内容|内容测评|文案撰写|销售|客服|主播|带货|推广|运营助理|数据标注|标注员|AI训练师|数据采集员|数据清洗员/i
+const rejectedTechStackPattern = /(?<![A-Za-z])Java(?![A-Za-z])|J2EE|Spring\s*Boot|SpringBoot|(?<![A-Za-z])Spring(?![A-Za-z])|MyBatis/i
+const requiredTechStackContextPattern = /熟悉|精通|掌握|具备|要求|必须|开发|技术栈|后端|服务端|框架|经验|搭建|维护/i
+const optionalTechStackContextPattern = /加分|优先|了解|非必|不是必须|不要求|不需要|不涉及|无需|可选|bonus|plus|nice to have/i
+const backgroundTechStackContextPattern = /部门|团队|其他|已有|现有|历史|遗留|迁移|对接|服务|系统/i
 const genericKeywordTokens = new Set(['实习', '实习生', '远程', '线上', '居家办公', '兼职'])
 
 const categoryRules = [
@@ -47,8 +51,7 @@ export function selectGreeting (job, bossConfig) {
 
 export function evaluateJobWithRules (job, bossConfig) {
   const text = jobText(job)
-  const rejectionText = text
-  const hardReject = hardRejectPattern.exec(rejectionText)
+  const hardReject = findHardReject(job, text)
   const configuredRegexResult = testConfiguredRegex(job, bossConfig)
   const category = inferCategory(text)
   const keywordMatch = matchConfiguredKeyword(job, bossConfig)
@@ -57,7 +60,7 @@ export function evaluateJobWithRules (job, bossConfig) {
   const greeting = selectGreeting(job, bossConfig)
 
   const reasons = []
-  if (hardReject) reasons.push(`hard reject pattern matched: ${hardReject[0]}`)
+  if (hardReject) reasons.push(`hard reject pattern matched: ${hardReject.match}`)
   if (!configuredRegexResult.pass) reasons.push(configuredRegexResult.reason)
   if (!category) reasons.push('no supported category matched')
   if (keywordMatch.keyword) reasons.push(`matched source keyword: ${keywordMatch.keyword}`)
@@ -114,6 +117,49 @@ function buildPresetTasks ({ decision, greeting, bossConfig }) {
 
 function inferCategory (text) {
   return categoryRules.find(rule => rule.pattern.test(text)) ?? null
+}
+
+function findHardReject (job, text) {
+  const nonTechReject = hardRejectPattern.exec(text)
+  if (nonTechReject) return { match: nonTechReject[0], type: 'job_type' }
+  return findRejectedTechStackRequirement(job, text)
+}
+
+function findRejectedTechStackRequirement (job, text) {
+  const titleMatch = rejectedTechStackPattern.exec(job.title ?? '')
+  if (titleMatch) {
+    return { match: titleMatch[0], type: 'tech_stack_title' }
+  }
+
+  for (const segment of splitRequirementSegments(text)) {
+    const stackMatch = rejectedTechStackPattern.exec(segment)
+    if (!stackMatch) continue
+    if (isOptionalOrBackgroundTechStackMention(segment)) continue
+    if (requiredTechStackContextPattern.test(segment) || hasMultipleRejectedTechStackSignals(segment)) {
+      return { match: stackMatch[0], type: 'tech_stack_requirement' }
+    }
+  }
+  return null
+}
+
+function splitRequirementSegments (text) {
+  return String(text ?? '')
+    .split(/[\r\n。；;，,.!！?？]+/)
+    .map(item => item.trim())
+    .filter(Boolean)
+}
+
+function isOptionalOrBackgroundTechStackMention (segment) {
+  return optionalTechStackContextPattern.test(segment) ||
+    (
+      backgroundTechStackContextPattern.test(segment) &&
+      !requiredTechStackContextPattern.test(segment.replace(rejectedTechStackPattern, ''))
+    )
+}
+
+function hasMultipleRejectedTechStackSignals (segment) {
+  const matches = segment.match(new RegExp(rejectedTechStackPattern.source, 'ig')) ?? []
+  return matches.length >= 2
 }
 
 function matchJdRequirements (text, category) {
