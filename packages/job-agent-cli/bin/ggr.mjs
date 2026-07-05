@@ -91,7 +91,7 @@ function snapshot () {
 
 async function extractJob (argv) {
   if (argv['from-browser']) {
-    const extracted = await extractCurrentJobFromBrowser({ headless: argv.headless })
+    const extracted = await extractCurrentJobFromBrowser({ headless: argv.headless, ...browserJobSourceOptions(argv) })
     return { ok: true, command: 'extract-job', source: 'browser', ...extracted }
   }
   const profile = await readJobFromArgs(argv)
@@ -131,6 +131,7 @@ async function startChat (argv) {
   const result = await startChatOnCurrentJob({
     confirm: argv.confirm,
     headless: argv.headless,
+    ...browserJobSourceOptions(argv),
   })
   return { ok: true, command: 'start-chat', result }
 }
@@ -139,6 +140,7 @@ async function nextJob (argv) {
   const result = await moveToNextJob({
     confirm: argv.confirm,
     headless: argv.headless,
+    ...browserJobSourceOptions(argv),
   })
   return { ok: true, command: 'next-job', result }
 }
@@ -178,7 +180,7 @@ async function runOnce (argv) {
 
   try {
     extraction = argv['from-browser']
-      ? { source: 'browser', ...(await extractCurrentJobFromBrowser({ headless: argv.headless })) }
+      ? { source: 'browser', ...(await extractCurrentJobFromBrowser({ headless: argv.headless, ...browserJobSourceOptions(argv) })) }
       : { source: argv.job ? 'file' : 'args', profile: await readJobFromArgs(argv) }
     profile = extraction.profile
     const { boss, llm } = loadRuntimeConfig()
@@ -199,6 +201,7 @@ async function runOnce (argv) {
         headless: argv.headless,
         expectedJob: profile,
         moveNext: true,
+        ...browserJobSourceOptions(argv),
         beforeMoveNext: ({ actions: browserActions }) => {
           auditResult = appendAuditLog(
             buildAuditRecord({
@@ -397,6 +400,13 @@ function readJsonFile (filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'))
 }
 
+function browserJobSourceOptions (argv) {
+  return {
+    query: argv.keyword ?? '',
+    city: argv.city ?? '',
+  }
+}
+
 function readOptionalJsonFile (filePath) {
   return filePath ? readJsonFile(filePath) : null
 }
@@ -427,14 +437,14 @@ function usage () {
     commands: [
       'ggr snapshot',
       'ggr extract-job --job job.json',
-      'ggr extract-job --from-browser',
+      'ggr extract-job --from-browser [--keyword keyword] [--city code]',
       'ggr evaluate-job --job job.json [--llm]',
-      'ggr start-chat --from-browser [--confirm]',
+      'ggr start-chat --from-browser [--keyword keyword] [--city code] [--confirm]',
       'ggr send-greeting --job job.json [--confirm]',
-      'ggr next-job [--confirm]',
+      'ggr next-job [--keyword keyword] [--city code] [--confirm]',
       'ggr audit-log [--event event.json]',
       'ggr run-once --job job.json [--llm] [--confirm]',
-      'ggr run-once --from-browser [--llm] [--confirm]',
+      'ggr run-once --from-browser [--keyword keyword] [--city code] [--llm] [--confirm]',
     ],
   }
 }

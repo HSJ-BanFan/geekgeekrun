@@ -18,20 +18,20 @@ const greetDialogSelector = '.greet-boss-dialog'
 const greetDialogInputSelector = 'textarea, input[type="text"], [contenteditable="true"], .chat-input'
 const greetDialogSendButtonSelector = '.greet-boss-footer .sure-btn, .greet-boss-footer .confirm-btn, .greet-boss-footer .btn-sure, .greet-boss-footer .btn-primary, .greet-boss-footer button:not(.cancel-btn)'
 
-export async function extractCurrentJobFromBrowser ({ headless = false } = {}) {
+export async function extractCurrentJobFromBrowser ({ headless = false, query = '', city = '' } = {}) {
   const { browser, page } = await openBrowser({ headless })
   try {
-    await openJobsPage(page)
+    await openJobsPage(page, { query, city })
     return await extractCurrentJobOnPage(page)
   } finally {
     await browser.close().catch(() => {})
   }
 }
 
-export async function startChatOnCurrentJob ({ confirm = false, headless = false, expectedJob = null } = {}) {
+export async function startChatOnCurrentJob ({ confirm = false, headless = false, expectedJob = null, query = '', city = '' } = {}) {
   const { browser, page } = await openBrowser({ headless })
   try {
-    await openJobsPage(page)
+    await openJobsPage(page, { query, city })
     const extraction = await extractCurrentJobOnPage(page)
     return await startChatOnCurrentPage(page, { confirm, expectedJob, currentProfile: extraction.profile })
   } finally {
@@ -39,10 +39,10 @@ export async function startChatOnCurrentJob ({ confirm = false, headless = false
   }
 }
 
-export async function moveToNextJob ({ confirm = false, headless = false } = {}) {
+export async function moveToNextJob ({ confirm = false, headless = false, query = '', city = '' } = {}) {
   const { browser, page } = await openBrowser({ headless })
   try {
-    await openJobsPage(page)
+    await openJobsPage(page, { query, city })
     return await moveToNextJobOnCurrentPage(page, { confirm })
   } finally {
     await browser.close().catch(() => {})
@@ -58,10 +58,12 @@ export async function runCurrentJobBrowserActions ({
   expectedJob = null,
   moveNext = true,
   beforeMoveNext = null,
+  query = '',
+  city = '',
 } = {}) {
   const { browser, page } = await openBrowser({ headless })
   try {
-    await openJobsPage(page)
+    await openJobsPage(page, { query, city })
     const extraction = await extractCurrentJobOnPage(page)
     const jobMatch = compareExpectedJob(extraction.profile, expectedJob)
     const actions = []
@@ -113,7 +115,7 @@ export async function runCurrentJobBrowserActions ({
     }
 
     if (moveNext) {
-      await returnToJobsPage(page)
+      await returnToJobsPage(page, { query, city })
       const result = await moveToNextJobOnCurrentPage(page, { confirm })
       actions.push({ type: 'next_job', result })
     }
@@ -140,10 +142,17 @@ export async function sendGreetingToMostRecentChat ({ message, imagePath, confir
   }
 }
 
-async function openJobsPage (page) {
-  await page.goto(jobsPageUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {})
+async function openJobsPage (page, { query = '', city = '' } = {}) {
+  await page.goto(buildJobsPageUrl({ query, city }), { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {})
   await page.waitForFunction(() => document.readyState === 'complete', { timeout: 60000 }).catch(() => {})
   await sleep(5000)
+}
+
+function buildJobsPageUrl ({ query = '', city = '' } = {}) {
+  const url = new URL(jobsPageUrl)
+  if (String(query).trim()) url.searchParams.set('query', String(query).trim())
+  if (String(city).trim()) url.searchParams.set('city', String(city).trim())
+  return url.toString()
 }
 
 async function extractCurrentJobOnPage (page) {
@@ -426,7 +435,7 @@ async function openChatPage (page) {
   await sleep(5000)
 }
 
-async function returnToJobsPage (page) {
+async function returnToJobsPage (page, { query = '', city = '' } = {}) {
   if (page.url().startsWith(jobsPageUrl)) return
   if (page.url().startsWith(chatPageUrl)) {
     await page.goBack({ waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => null)
@@ -440,7 +449,7 @@ async function returnToJobsPage (page) {
       return
     }
   }
-  await openJobsPage(page)
+  await openJobsPage(page, { query, city })
 }
 
 async function clickMostRecentConversation (page) {
