@@ -498,12 +498,7 @@ async function sendCustomGreetingImageInDialog (imagePath) {
   return true
 }
 
-async function sendAutoStartChatGreetingIfNeeded (positionInfoDetail) {
-  const message = selectAutoStartChatGreetingMessage(positionInfoDetail)
-  if (!message && !autoStartChatGreetingImagePath) {
-    return false
-  }
-  await waitForAutoStartGreetingSurface()
+async function sendAutoStartChatGreetingOnCurrentSurface (message) {
   let sentAny = false
   try {
     if (
@@ -542,6 +537,46 @@ async function sendAutoStartChatGreetingIfNeeded (positionInfoDetail) {
     console.log('custom auto-start greeting is configured, but no supported input was found')
   }
   return sentAny
+}
+
+async function openMostRecentChatConversation () {
+  await page.goto('https://www.zhipin.com/web/geek/chat', { waitUntil: 'domcontentloaded', timeout: 60000 })
+  await page.waitForFunction(() => document.readyState === 'complete', { timeout: 60000 }).catch(() => {})
+  await sleepWithRandomDelay(4000)
+  const firstChatHandle = await page.$('.user-list-content li, .user-list .user-list-content li')
+  if (firstChatHandle) {
+    await firstChatHandle.click()
+    await sleepWithRandomDelay(2500)
+  }
+  return Boolean(await waitForAutoStartGreetingSurface(15000))
+}
+
+async function sendAutoStartChatGreetingInMostRecentChat (positionInfoDetail) {
+  const message = selectAutoStartChatGreetingMessage(positionInfoDetail)
+  if (!message && !autoStartChatGreetingImagePath) {
+    return false
+  }
+  try {
+    console.log('custom auto-start greeting fallback: open most recent chat')
+    const opened = await openMostRecentChatConversation()
+    if (!opened) {
+      return false
+    }
+    return await sendAutoStartChatGreetingOnCurrentSurface(message)
+  }
+  catch (err) {
+    console.log('send custom auto-start greeting in recent chat failed', err?.message ?? err)
+    return false
+  }
+}
+
+async function sendAutoStartChatGreetingIfNeeded (positionInfoDetail) {
+  const message = selectAutoStartChatGreetingMessage(positionInfoDetail)
+  if (!message && !autoStartChatGreetingImagePath) {
+    return false
+  }
+  await waitForAutoStartGreetingSurface()
+  return await sendAutoStartChatGreetingOnCurrentSurface(message)
 }
 
 /**
@@ -1817,9 +1852,19 @@ async function toRecommendPage (hooks) {
 
             await storeStorage(page).catch(() => void 0)
             await sleepWithRandomDelay(1500)
-            const customGreetingSent = await sendAutoStartChatGreetingIfNeeded(targetJobData)
-            if (hasGoToChatPage) {
+            let customGreetingSent = await sendAutoStartChatGreetingIfNeeded(targetJobData)
+            if (!customGreetingSent) {
+              customGreetingSent = await sendAutoStartChatGreetingInMostRecentChat(targetJobData)
+            }
+            if (hasGoToChatPage && page.url().startsWith('https://www.zhipin.com/web/geek/chat')) {
               await page.goBack()
+              await page.waitForFunction(() => {
+                return location.href.startsWith(`https://www.zhipin.com/web/geek/jobs`) && document.readyState === 'complete'
+              })
+              await sleepWithRandomDelay(2000)
+            }
+            else if (!page.url().startsWith('https://www.zhipin.com/web/geek/jobs')) {
+              await page.goto(recommendJobPageUrl, { waitUntil: 'domcontentloaded', timeout: 60000 })
               await page.waitForFunction(() => {
                 return location.href.startsWith(`https://www.zhipin.com/web/geek/jobs`) && document.readyState === 'complete'
               })

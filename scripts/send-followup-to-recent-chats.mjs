@@ -22,19 +22,28 @@ const browserPath = fs.existsSync(browserRecordPath)
   ? fs.readFileSync(browserRecordPath, 'utf8').trim().split(/\r?\n/)[0]
   : ''
 const bossConfig = JSON.parse(fs.readFileSync(bossConfigPath, 'utf8'))
-const message = String(bossConfig.autoStartChatGreetingMessage ?? '').trim()
+const defaultMessage = String(bossConfig.autoStartChatGreetingMessage ?? '').trim()
 const imagePath = String(bossConfig.autoStartChatGreetingImagePath ?? '').trim()
+const greetingRules = Array.isArray(bossConfig.autoStartChatGreetingMessageRules)
+  ? bossConfig.autoStartChatGreetingMessageRules
+    .map(rule => ({
+      name: String(rule?.name ?? '').trim(),
+      pattern: String(rule?.pattern ?? '').trim(),
+      message: String(rule?.message ?? '').trim(),
+    }))
+    .filter(rule => rule.pattern && rule.message)
+  : []
 const sentMarker = String(
   bossConfig.autoStartChatGreetingSentMarker ??
-  message.split(/\s+/).find(part => part.length >= 8) ??
-  message.slice(0, 20)
+  defaultMessage.split(/\s+/).find(part => part.length >= 8) ??
+  defaultMessage.slice(0, 20)
 ).trim()
 
 if (!browserPath || !fs.existsSync(browserPath)) {
   console.error(JSON.stringify({ type: 'fatal', reason: 'NO_BROWSER', browserPath }))
   process.exit(85)
 }
-if (!message) {
+if (!defaultMessage) {
   console.error(JSON.stringify({ type: 'fatal', reason: 'NO_MESSAGE' }))
   process.exit(1)
 }
@@ -50,6 +59,17 @@ puppeteerExtra.use(AnonymizeUaPlugin({ makeWindows: false }))
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 
 const normalize = (text) => String(text ?? '').trim().replace(/\s+/g, ' ')
+
+function selectMessage(targetText) {
+  for (const rule of greetingRules) {
+    try {
+      if (new RegExp(rule.pattern, 'im').test(targetText)) {
+        return { message: rule.message, rule: rule.name || rule.pattern }
+      }
+    } catch {}
+  }
+  return { message: defaultMessage, rule: 'default' }
+}
 
 async function getConversationItems(page) {
   return page.evaluate(() => {
@@ -116,7 +136,7 @@ async function clickSend(page) {
   return true
 }
 
-async function sendMessage(page) {
+async function sendMessage(page, message) {
   const inputSelector = '.chat-conversation .message-controls .chat-input'
   const typed = await clearAndType(page, inputSelector, message)
   if (!typed) return false
@@ -220,8 +240,11 @@ try {
 
       let textSent = false
       let imageResult = { uploaded: false, sendClicked: false }
+      let greetingRule = null
       if (!alreadySent) {
-        textSent = await sendMessage(page)
+        const selected = selectMessage(target.text)
+        greetingRule = selected.rule
+        textSent = await sendMessage(page, selected.message)
         imageResult = await sendImage(page)
       }
 
@@ -230,6 +253,7 @@ try {
         target: target.text.slice(0, 160),
         found: true,
         alreadySent,
+        greetingRule,
         textSent,
         imageUploaded: imageResult.uploaded,
         imageSendClicked: imageResult.sendClicked,

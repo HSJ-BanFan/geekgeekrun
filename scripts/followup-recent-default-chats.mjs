@@ -21,20 +21,40 @@ const cookies = JSON.parse(fs.readFileSync(path.join(storageDir, 'boss-cookies.j
 })
 const localStorageData = JSON.parse(fs.readFileSync(path.join(storageDir, 'boss-local-storage.json'), 'utf8'))
 const bossConfig = JSON.parse(fs.readFileSync(path.join(configDir, 'boss.json'), 'utf8'))
-const message = String(bossConfig.autoStartChatGreetingMessage ?? '').trim()
+const defaultMessage = String(bossConfig.autoStartChatGreetingMessage ?? '').trim()
 const imagePath = String(bossConfig.autoStartChatGreetingImagePath ?? '').trim()
+const greetingRules = Array.isArray(bossConfig.autoStartChatGreetingMessageRules)
+  ? bossConfig.autoStartChatGreetingMessageRules
+    .map(rule => ({
+      name: String(rule?.name ?? '').trim(),
+      pattern: String(rule?.pattern ?? '').trim(),
+      message: String(rule?.message ?? '').trim(),
+    }))
+    .filter(rule => rule.pattern && rule.message)
+  : []
 const sentMarker = String(
   bossConfig.autoStartChatGreetingSentMarker ??
-  message.split(/\s+/).find(part => part.length >= 8) ??
-  message.slice(0, 20)
+  defaultMessage.split(/\s+/).find(part => part.length >= 8) ??
+  defaultMessage.slice(0, 20)
 ).trim()
 
-if (!message || !imagePath || !fs.existsSync(imagePath)) {
+if (!defaultMessage || !imagePath || !fs.existsSync(imagePath)) {
   console.error(JSON.stringify({ type: 'fatal', reason: 'MISSING_MESSAGE_OR_IMAGE', imagePath }))
   process.exit(1)
 }
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+function selectMessage(targetText) {
+  for (const rule of greetingRules) {
+    try {
+      if (new RegExp(rule.pattern, 'im').test(targetText)) {
+        return { message: rule.message, rule: rule.name || rule.pattern }
+      }
+    } catch {}
+  }
+  return { message: defaultMessage, rule: 'default' }
+}
 
 puppeteerExtra.use(StealthPlugin())
 puppeteerExtra.use(LaodengPlugin())
@@ -88,7 +108,7 @@ async function clickTarget(page, targetText) {
   return true
 }
 
-async function sendText(page) {
+async function sendText(page, message) {
   const input = await page.$('.chat-conversation .message-controls .chat-input')
   if (!input) return false
   await input.click()
@@ -160,16 +180,19 @@ try {
     let alreadyCustom = false
     let textSent = false
     let imageUploaded = false
+    let greetingRule = null
     if (clicked) {
       alreadyCustom = await page.evaluate((marker) => {
         return Boolean(marker) && (document.querySelector('.chat-conversation')?.innerText?.includes(marker) ?? false)
       }, sentMarker).catch(() => false)
       if (!alreadyCustom) {
-        textSent = await sendText(page)
+        const selected = selectMessage(target)
+        greetingRule = selected.rule
+        textSent = await sendText(page, selected.message)
         imageUploaded = await sendImage(page)
       }
     }
-    const result = { index: i + 1, target: target.slice(0, 180), clicked, alreadyCustom, textSent, imageUploaded }
+    const result = { index: i + 1, target: target.slice(0, 180), clicked, alreadyCustom, greetingRule, textSent, imageUploaded }
     results.push(result)
     console.log(JSON.stringify({ type: 'followup-result', ...result }))
     await sleep(1000)
