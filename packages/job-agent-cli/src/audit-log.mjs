@@ -42,6 +42,7 @@ export function buildAuditRecord ({
   dryRun,
   extraction,
   profile,
+  candidateProfile,
   ruleEvaluation,
   llmEvaluation,
   finalDecision,
@@ -60,6 +61,7 @@ export function buildAuditRecord ({
         }
       : null,
     profile: summarizeProfile(profile ?? extraction?.profile),
+    candidateProfile,
     ruleEvaluation,
     llmEvaluation,
     finalDecision,

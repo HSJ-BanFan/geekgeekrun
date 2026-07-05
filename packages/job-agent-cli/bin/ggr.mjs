@@ -7,6 +7,7 @@ import { loadRuntimeConfig, getEnabledSearchKeywords, getGreetingRules, getResum
 import { normalizeJobProfile } from '../src/job-profile.mjs'
 import { evaluateJobWithRules, selectGreeting } from '../src/policy.mjs'
 import { evaluateJobWithLlm } from '../src/llm-evaluator.mjs'
+import { buildCandidateProfile, summarizeCandidateProfile } from '../src/candidate-profile.mjs'
 import {
   extractCurrentJobFromBrowser,
   moveToNextJob,
@@ -71,10 +72,12 @@ async function dispatch (command, argv) {
 
 function snapshot () {
   const { boss, llm, storageFilePath } = loadRuntimeConfig()
+  const candidateProfile = buildCandidateProfile(boss)
   return {
     ok: true,
     command: 'snapshot',
     storageFilePath,
+    candidateProfile: summarizeCandidateProfile(candidateProfile),
     keywordCount: getEnabledSearchKeywords(boss).length,
     keywords: getEnabledSearchKeywords(boss),
     staticConditionCount: boss.staticCombineRecommendJobFilterConditions?.length ?? 0,
@@ -98,11 +101,14 @@ async function extractJob (argv) {
 async function evaluateJob (argv) {
   const profile = await readJobFromArgs(argv)
   const { boss, llm } = loadRuntimeConfig()
-  const ruleEvaluation = evaluateJobWithRules(profile, boss)
+  const candidateProfile = buildCandidateProfile(boss)
+  const candidateProfileSummary = summarizeCandidateProfile(candidateProfile)
+  const ruleEvaluation = evaluateJobWithRules(profile, boss, candidateProfile)
   const llmEvaluation = argv.llm
-    ? await evaluateJobWithLlm({ job: profile, ruleEvaluation, llmConfig: llm })
+    ? await evaluateJobWithLlm({ job: profile, ruleEvaluation, llmConfig: llm, candidateProfile })
     : null
-  return { ok: true, command: 'evaluate-job', profile, ruleEvaluation, llmEvaluation }
+  const finalDecision = resolveFinalDecision(ruleEvaluation, llmEvaluation)
+  return { ok: true, command: 'evaluate-job', profile, candidateProfile: candidateProfileSummary, ruleEvaluation, llmEvaluation, finalDecision }
 }
 
 async function sendGreeting (argv) {
@@ -163,6 +169,8 @@ async function runOnce (argv) {
   let error = null
   let extraction = null
   let profile = null
+  let candidateProfile = null
+  let candidateProfileSummary = null
   let ruleEvaluation = null
   let llmEvaluation = null
   let finalDecision = null
@@ -174,9 +182,11 @@ async function runOnce (argv) {
       : { source: argv.job ? 'file' : 'args', profile: await readJobFromArgs(argv) }
     profile = extraction.profile
     const { boss, llm } = loadRuntimeConfig()
-    ruleEvaluation = evaluateJobWithRules(profile, boss)
+    candidateProfile = buildCandidateProfile(boss)
+    candidateProfileSummary = summarizeCandidateProfile(candidateProfile)
+    ruleEvaluation = evaluateJobWithRules(profile, boss, candidateProfile)
     llmEvaluation = argv.llm
-      ? await evaluateJobWithLlm({ job: profile, ruleEvaluation, llmConfig: llm })
+      ? await evaluateJobWithLlm({ job: profile, ruleEvaluation, llmConfig: llm, candidateProfile })
       : null
     finalDecision = resolveFinalDecision(ruleEvaluation, llmEvaluation)
 
@@ -197,6 +207,7 @@ async function runOnce (argv) {
               dryRun: !argv.confirm,
               extraction,
               profile,
+              candidateProfile: candidateProfileSummary,
               ruleEvaluation,
               llmEvaluation,
               finalDecision,
@@ -239,6 +250,7 @@ async function runOnce (argv) {
         dryRun: !argv.confirm,
         extraction,
         profile,
+        candidateProfile: candidateProfileSummary,
         ruleEvaluation,
         llmEvaluation,
         finalDecision,
@@ -264,6 +276,7 @@ async function runOnce (argv) {
     runId,
     error,
     profile,
+    candidateProfile: candidateProfileSummary,
     ruleEvaluation,
     llmEvaluation,
     finalDecision,
@@ -288,44 +301,34 @@ async function readJobFromArgs (argv) {
 }
 
 function resolveFinalDecision (ruleEvaluation, llmEvaluation) {
-  if (ruleEvaluation?.decision === 'skip') {
+  if (ruleEvaluation?.hardReject) {
     return {
       decision: 'skip',
       source: 'rules',
-      reason: 'rule skip cannot be upgraded by llm',
+      reason: 'hard reject boundary cannot be upgraded by llm',
     }
   }
   const llmDecision = typeof llmEvaluation?.decision === 'string'
     ? llmEvaluation.decision.trim().toLowerCase()
     : ''
-  if (ruleEvaluation?.techStackAssessment?.requiresLlm) {
-    const llmTechStackAssessment = getLlmTechStackAssessment(llmEvaluation)
+  const requiresLlmFinalDecision = Boolean(
+    ruleEvaluation?.requiresLlmFinalDecision ||
+    ruleEvaluation?.techStackAssessment?.requiresLlm
+  )
+  if (requiresLlmFinalDecision) {
     if (!llmEvaluation || llmEvaluation.skipped) {
       return {
         decision: 'uncertain',
         source: 'rules',
-        reason: 'llm tech stack assessment required before auto-apply',
+        reason: 'llm final decision required before auto-apply',
       }
     }
-    if (typeof llmTechStackAssessment?.is_core_required !== 'boolean') {
+    const invalidReason = validateRequiredLlmJudgment(llmEvaluation, ruleEvaluation, llmDecision)
+    if (invalidReason) {
       return {
         decision: 'uncertain',
         source: 'llm',
-        reason: 'llm did not explain whether rejected tech stack is core/required',
-      }
-    }
-    if (llmTechStackAssessment.is_core_required) {
-      return {
-        decision: 'skip',
-        source: 'llm',
-        reason: 'llm identified rejected tech stack as core/required',
-      }
-    }
-    if (!['apply', 'skip', 'uncertain'].includes(llmDecision)) {
-      return {
-        decision: 'uncertain',
-        source: 'llm',
-        reason: 'llm tech stack assessment passed but decision is missing or invalid',
+        reason: invalidReason,
       }
     }
   }
@@ -333,7 +336,14 @@ function resolveFinalDecision (ruleEvaluation, llmEvaluation) {
     return {
       decision: llmDecision,
       source: 'llm',
-      reason: 'llm decision applied after rule boundary check',
+      reason: 'llm decision applied after candidate profile and rule boundary check',
+    }
+  }
+  if (requiresLlmFinalDecision) {
+    return {
+      decision: 'uncertain',
+      source: 'rules',
+      reason: 'missing llm decision for candidate profile final judgment',
     }
   }
   return {
@@ -341,6 +351,42 @@ function resolveFinalDecision (ruleEvaluation, llmEvaluation) {
     source: 'rules',
     reason: llmEvaluation?.skipped ? llmEvaluation.reason : 'no llm decision',
   }
+}
+
+function validateRequiredLlmJudgment (llmEvaluation, ruleEvaluation, llmDecision) {
+  if (llmEvaluation?.parseError) return `llm response parse error: ${llmEvaluation.parseError}`
+  if (!['apply', 'skip', 'uncertain'].includes(llmDecision)) {
+    return 'llm decision is missing or invalid'
+  }
+  if (ruleEvaluation?.requiresLlmFinalDecision) {
+    const missing = [
+      ['resume_fit', llmEvaluation.resume_fit ?? llmEvaluation.resumeFit],
+      ['intent_fit', llmEvaluation.intent_fit ?? llmEvaluation.intentFit],
+      ['keyword_context_fit', llmEvaluation.keyword_context_fit ?? llmEvaluation.keywordContextFit],
+    ]
+      .filter(([, value]) => !hasLlmJudgment(value))
+      .map(([name]) => name)
+    if (missing.length) return `llm missing required fit judgment: ${missing.join(', ')}`
+  }
+  const techStackAssessment = getLlmTechStackAssessment(llmEvaluation)
+  if (!hasLlmJudgment(techStackAssessment?.explanation)) {
+    return 'llm missing tech stack assessment explanation'
+  }
+  if ((ruleEvaluation?.techStackAssessment?.terms ?? []).length &&
+    typeof techStackAssessment?.is_core_required !== 'boolean') {
+    return 'llm did not explain whether attention tech stack terms are core/required'
+  }
+  return ''
+}
+
+function hasLlmJudgment (value) {
+  if (typeof value === 'string') return Boolean(value.trim())
+  if (!value || typeof value !== 'object') return false
+  return Object.values(value).some(item => {
+    if (Array.isArray(item)) return item.length > 0
+    if (typeof item === 'string') return Boolean(item.trim())
+    return item != null
+  })
 }
 
 function getLlmTechStackAssessment (llmEvaluation) {

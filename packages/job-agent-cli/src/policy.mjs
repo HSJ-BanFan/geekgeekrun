@@ -2,11 +2,36 @@ import { getDefaultGreeting, getEnabledSearchKeywords, getGreetingRules, getResu
 import { jobText } from './job-profile.mjs'
 
 const hardRejectPattern = /信息录入|录入员|纯兼职|运营跟播|跟播|内容审核|审核专员|AI内容|内容测评|文案撰写|销售|客服|主播|带货|推广|运营助理|数据标注|标注员|AI训练师|数据采集员|数据清洗员/i
-const rejectedTechStackPattern = /(?<![A-Za-z])Java(?![A-Za-z])|J2EE|Spring\s*Boot|SpringBoot|(?<![A-Za-z])Spring(?![A-Za-z])|MyBatis/i
+const techStackAttentionPattern = /(?<![A-Za-z])Java(?![A-Za-z])|J2EE|Spring\s*Boot|SpringBoot|(?<![A-Za-z])Spring(?![A-Za-z])|MyBatis/i
 const requiredTechStackContextPattern = /熟悉|精通|掌握|具备|要求|必须|开发|技术栈|后端|服务端|框架|经验|搭建|维护/i
 const optionalTechStackContextPattern = /加分|优先|了解|非必|不是必须|不要求|不需要|不涉及|无需|可选|bonus|plus|nice to have/i
 const backgroundTechStackContextPattern = /部门|团队|其他|已有|现有|历史|遗留|迁移|对接|服务|系统/i
 const genericKeywordTokens = new Set(['实习', '实习生', '远程', '线上', '居家办公', '兼职'])
+const genericProfileTokens = new Set([
+  '实习',
+  '实习生',
+  '远程',
+  '线上',
+  '居家办公',
+  '兼职',
+  '开发',
+  '工程师',
+  '岗位',
+  '职位',
+  '要求',
+  '任职',
+  '工作',
+  '项目',
+  '负责',
+  '使用',
+  '熟悉',
+  '掌握',
+  '了解',
+  '经验',
+  '系统',
+  '平台',
+  '能力',
+])
 
 const categoryRules = [
   {
@@ -49,41 +74,66 @@ export function selectGreeting (job, bossConfig) {
   return { rule: 'default', message: getDefaultGreeting(bossConfig) }
 }
 
-export function evaluateJobWithRules (job, bossConfig) {
-  const text = jobText(job)
+export function evaluateJobWithRules (job, bossConfig, candidateProfile = null) {
+  const text = jobContentText(job)
   const hardReject = findHardReject(job, text)
-  const techStackAssessment = assessRejectedTechStack(job, text)
+  const techStackAssessment = assessTechStackAttention(job, text)
   const configuredRegexResult = testConfiguredRegex(job, bossConfig)
   const category = inferCategory(text)
   const keywordMatch = matchConfiguredKeyword(job, bossConfig)
+  const profileFit = matchCandidateProfile(job, candidateProfile)
   const jdMatches = matchJdRequirements(text, category)
   const remoteFit = hasRemoteSignal(text)
   const greeting = selectGreeting(job, bossConfig)
+  const requiresLlmFinalDecision = Boolean(candidateProfile?.requiresLlmForFinalDecision)
+  const configuredRegexMatched = Boolean(configuredRegexResult.configured && configuredRegexResult.pass)
+  const hasTargetFit = Boolean(
+    category ||
+    keywordMatch.keyword ||
+    configuredRegexMatched ||
+    profileFit.expectedJobMatched ||
+    profileFit.intentSignalMatches.length ||
+    profileFit.resumeSignalMatches.length ||
+    profileFit.keywordIntentMatches.length
+  )
 
   const reasons = []
   if (hardReject) reasons.push(`hard reject pattern matched: ${hardReject.match}`)
   if (techStackAssessment.requiresLlm) {
-    reasons.push(`tech stack requires llm assessment: ${techStackAssessment.terms.join(', ')}`)
+    reasons.push(`tech stack needs llm explanation: ${techStackAssessment.terms.join(', ')}`)
   }
-  if (!configuredRegexResult.pass) reasons.push(configuredRegexResult.reason)
-  if (!category) reasons.push('no supported category matched')
-  if (keywordMatch.keyword) reasons.push(`matched source keyword: ${keywordMatch.keyword}`)
+  if (configuredRegexResult.configured) reasons.push(configuredRegexResult.reason)
+  if (requiresLlmFinalDecision) reasons.push('llm final decision required for resume, intent, keyword, and JD fit')
+  if (!hasTargetFit) reasons.push('no lexical candidate profile or keyword fit matched')
+  if (keywordMatch.keyword) reasons.push(`matched configured keyword context: ${keywordMatch.keyword}`)
+  if (profileFit.expectedJobMatched) reasons.push(`matched resume expected job: ${candidateProfile?.expectedJob ?? ''}`)
+  if (profileFit.intentSignalMatches.length) {
+    reasons.push(`matched candidate intent signals: ${profileFit.intentSignalMatches.slice(0, 5).join(', ')}`)
+  }
+  if (profileFit.keywordIntentMatches.length) {
+    reasons.push(`matched keyword context: ${profileFit.keywordIntentMatches.slice(0, 3).join(', ')}`)
+  }
   if (remoteFit) reasons.push('remote/online signal matched')
 
   let score = 0
-  if (category) score += 35
-  if (configuredRegexResult.pass) score += 20
+  if (category) score += 20
+  if (profileFit.expectedJobMatched) score += 20
+  if (profileFit.intentSignalMatches.length) score += Math.min(20, profileFit.intentSignalMatches.length * 5)
+  if (profileFit.resumeSignalMatches.length) score += Math.min(15, profileFit.resumeSignalMatches.length * 3)
+  if (configuredRegexMatched) score += 15
   if (keywordMatch.keyword) score += 15
-  if (jdMatches.matched.length) score += 15
-  if (remoteFit) score += 10
+  if (jdMatches.matched.length) score += 10
+  if (remoteFit) score += 5
   if (job.salary) score += 5
-  if (hardReject || !configuredRegexResult.pass || !category) score = Math.min(score, 30)
+  if (hardReject || !hasTargetFit || !configuredRegexResult.valid) score = Math.min(score, 30)
 
   let decision = 'uncertain'
-  if (hardReject || !configuredRegexResult.pass || !category) {
+  if (hardReject) {
     decision = 'skip'
-  } else if (techStackAssessment.requiresLlm) {
+  } else if (requiresLlmFinalDecision || techStackAssessment.requiresLlm || !configuredRegexResult.valid) {
     decision = 'uncertain'
+  } else if (!configuredRegexResult.pass || !hasTargetFit) {
+    decision = 'skip'
   } else if (score >= 65) {
     decision = 'apply'
   }
@@ -91,9 +141,12 @@ export function evaluateJobWithRules (job, bossConfig) {
   return {
     decision,
     score,
+    hardReject,
+    requiresLlmFinalDecision,
     category: category?.category ?? 'unknown',
     keywordMatch,
     configuredRegex: configuredRegexResult,
+    profileFit,
     jdMatch: jdMatches,
     remoteFit,
     techStackAssessment,
@@ -101,20 +154,27 @@ export function evaluateJobWithRules (job, bossConfig) {
     greetingMessage: greeting.message,
     resumeImagePath: getResumeImagePath(bossConfig),
     reasons,
-    presetTasks: buildPresetTasks({ decision, greeting, bossConfig, techStackAssessment }),
+    presetTasks: buildPresetTasks({ decision, greeting, bossConfig, techStackAssessment, requiresLlmFinalDecision }),
   }
 }
 
-function buildPresetTasks ({ decision, greeting, bossConfig, techStackAssessment }) {
+function buildPresetTasks ({ decision, greeting, bossConfig, techStackAssessment, requiresLlmFinalDecision }) {
   if (decision === 'skip') {
     return [{ type: 'mark_not_suit', dryRun: true }]
   }
   if (decision === 'uncertain') {
     const tasks = []
+    if (requiresLlmFinalDecision) {
+      tasks.push({
+        type: 'evaluate_job_llm',
+        reason: 'candidate_profile_final_decision_required',
+        dryRun: true,
+      })
+    }
     if (techStackAssessment?.requiresLlm) {
       tasks.push({
         type: 'evaluate_job_llm',
-        reason: 'rejected_tech_stack_assessment_required',
+        reason: 'tech_stack_explanation_required',
         terms: techStackAssessment.terms,
         dryRun: true,
       })
@@ -143,9 +203,9 @@ function findHardReject (job, text) {
   return null
 }
 
-function assessRejectedTechStack (job, text) {
+function assessTechStackAttention (job, text) {
   const evidence = []
-  for (const term of findRejectedTechStackTerms(job.title ?? '')) {
+  for (const term of findTechStackAttentionTerms(job.title ?? '')) {
     evidence.push({
       term,
       segment: job.title,
@@ -154,7 +214,7 @@ function assessRejectedTechStack (job, text) {
   }
 
   for (const segment of splitRequirementSegments(text)) {
-    for (const term of findRejectedTechStackTerms(segment)) {
+    for (const term of findTechStackAttentionTerms(segment)) {
       evidence.push({
         term,
         segment,
@@ -171,19 +231,19 @@ function assessRejectedTechStack (job, text) {
     preliminaryVerdict: getPreliminaryTechStackVerdict(dedupedEvidence),
     evidence: dedupedEvidence,
     instruction: terms.length
-      ? 'LLM must explain whether rejected stack terms are core/required skills or only optional/background mentions.'
+      ? 'LLM must explain whether these technology terms are core/required skills, optional/background mentions, and whether the core stack matches the candidate resume and intent.'
       : '',
   }
 }
 
-function findRejectedTechStackTerms (text) {
-  const regex = new RegExp(rejectedTechStackPattern.source, 'ig')
+function findTechStackAttentionTerms (text) {
+  const regex = new RegExp(techStackAttentionPattern.source, 'ig')
   return [...String(text ?? '').matchAll(regex)].map(match => match[0])
 }
 
 function classifyTechStackMention (segment) {
   if (isOptionalOrBackgroundTechStackMention(segment)) return 'optional_or_background'
-  if (requiredTechStackContextPattern.test(segment) || hasMultipleRejectedTechStackSignals(segment)) {
+  if (requiredTechStackContextPattern.test(segment) || hasMultipleTechStackAttentionSignals(segment)) {
     return 'requirement_like'
   }
   return 'mentioned'
@@ -223,13 +283,134 @@ function isOptionalOrBackgroundTechStackMention (segment) {
   return optionalTechStackContextPattern.test(segment) ||
     (
       backgroundTechStackContextPattern.test(segment) &&
-      !requiredTechStackContextPattern.test(segment.replace(rejectedTechStackPattern, ''))
+      !requiredTechStackContextPattern.test(segment.replace(techStackAttentionPattern, ''))
     )
 }
 
-function hasMultipleRejectedTechStackSignals (segment) {
-  const matches = segment.match(new RegExp(rejectedTechStackPattern.source, 'ig')) ?? []
+function hasMultipleTechStackAttentionSignals (segment) {
+  const matches = segment.match(new RegExp(techStackAttentionPattern.source, 'ig')) ?? []
   return matches.length >= 2
+}
+
+function matchCandidateProfile (job, candidateProfile) {
+  const empty = {
+    profileAvailable: false,
+    expectedJobMatched: false,
+    expectedJobMatches: [],
+    intentSignalMatches: [],
+    resumeSignalMatches: [],
+    keywordIntentMatches: [],
+    regexMatches: [],
+  }
+  if (!candidateProfile) return empty
+
+  const text = normalizeSearchText(jobContentText(job))
+  const titleText = normalizeSearchText(job.title ?? '')
+  const jdText = normalizeSearchText(job.jd ?? '')
+  const regexMatches = matchCandidateRegexes({ titleText, jdText, fullText: text }, candidateProfile)
+  const expectedJobMatches = matchSignals(splitSignalText(candidateProfile.expectedJob), text, 12)
+  const intentSignalMatches = matchSignals(candidateProfile.intentSignals ?? [], text, 20)
+  const resumeSignalMatches = matchSignals(candidateProfile.resumeSignals ?? [], text, 20)
+  const keywordIntentMatches = matchCandidateKeywords(job, candidateProfile, text)
+
+  return {
+    profileAvailable: true,
+    expectedJobMatched: Boolean(expectedJobMatches.length || regexMatches.some(item => item.matched)),
+    expectedJobMatches,
+    intentSignalMatches,
+    resumeSignalMatches,
+    keywordIntentMatches,
+    regexMatches,
+  }
+}
+
+function matchCandidateRegexes ({ titleText, jdText, fullText }, candidateProfile) {
+  const checks = [
+    ['titleRegex', candidateProfile.titleRegex, titleText],
+    ['typeRegex', candidateProfile.typeRegex, fullText],
+    ['descRegex', candidateProfile.descRegex, jdText || fullText],
+  ]
+  return checks
+    .filter(([, pattern]) => String(pattern ?? '').trim())
+    .map(([name, pattern, text]) => {
+      try {
+        return { name, matched: new RegExp(pattern, 'im').test(text), pattern }
+      } catch (err) {
+        return { name, matched: false, pattern, error: err?.message ?? String(err) }
+      }
+    })
+}
+
+function matchCandidateKeywords (job, candidateProfile, normalizedJobText) {
+  const result = []
+  const sourceKeyword = String(job.sourceKeyword ?? '').trim()
+  const keywords = candidateProfile.searchKeywords ?? []
+  if (sourceKeyword && keywords.includes(sourceKeyword)) {
+    result.push(sourceKeyword)
+  }
+  for (const keyword of keywords) {
+    if (result.includes(keyword)) continue
+    const tokens = splitSignalText(keyword).filter(token => !genericKeywordTokens.has(token))
+    if (!tokens.length) continue
+    const matchedTokens = matchSignals(tokens, normalizedJobText, tokens.length)
+    if (matchedTokens.length && matchedTokens.length === tokens.length) {
+      result.push(keyword)
+    }
+  }
+  return result.slice(0, 20)
+}
+
+function matchSignals (signals, normalizedJobText, limit) {
+  const result = []
+  const seen = new Set()
+  for (const rawSignal of signals) {
+    for (const signal of splitSignalText(rawSignal)) {
+      const normalized = normalizeSignal(signal)
+      const key = normalized.toLowerCase()
+      if (!isUsefulProfileSignal(normalized) || seen.has(key)) continue
+      if (!signalAppearsInText(normalized, normalizedJobText)) continue
+      seen.add(key)
+      result.push(normalized)
+      if (result.length >= limit) return result
+    }
+  }
+  return result
+}
+
+function splitSignalText (text) {
+  const source = String(text ?? '')
+    .replace(/[\\^$.*+?()[\]{}|]/g, ' ')
+  return source.match(/[A-Za-z][A-Za-z0-9+#._-]*|[\u4e00-\u9fff]{2,}/g) ?? []
+}
+
+function normalizeSignal (signal) {
+  return String(signal ?? '')
+    .trim()
+    .replace(/^[^\u4e00-\u9fffA-Za-z0-9+#._-]+|[^\u4e00-\u9fffA-Za-z0-9+#._-]+$/g, '')
+}
+
+function isUsefulProfileSignal (signal) {
+  const normalized = signal.toLowerCase()
+  return signal.length >= 2 &&
+    !genericProfileTokens.has(signal) &&
+    !genericProfileTokens.has(normalized)
+}
+
+function signalAppearsInText (signal, normalizedJobText) {
+  const normalized = normalizeSearchText(signal)
+  if (!normalized) return false
+  if (/^[a-z0-9+#._-]+$/i.test(signal)) {
+    return new RegExp(`(^|[^a-z0-9+#._-])${escapeRegExp(normalized)}($|[^a-z0-9+#._-])`, 'i').test(normalizedJobText)
+  }
+  return normalizedJobText.includes(normalized)
+}
+
+function normalizeSearchText (text) {
+  return String(text ?? '').toLowerCase()
+}
+
+function escapeRegExp (text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function matchJdRequirements (text, category) {
@@ -266,19 +447,73 @@ function matchConfiguredKeyword (job, bossConfig) {
 }
 
 function testConfiguredRegex (job, bossConfig) {
-  const pattern = String(bossConfig.expectJobNameRegExpStr ?? '').trim()
-  if (!pattern) return { pass: true, reason: 'no configured title regex' }
-  try {
-    const pass = new RegExp(pattern, 'im').test(job.title)
-    return { pass, reason: pass ? 'title regex matched' : 'title regex did not match' }
-  } catch (err) {
-    return { pass: false, reason: `invalid configured title regex: ${err?.message ?? err}` }
+  const checks = [
+    ['title', bossConfig.expectJobNameRegExpStr ?? bossConfig.expectJobRegExpStr, job.title],
+    ['type', bossConfig.expectJobTypeRegExpStr, jobContentText(job)],
+    ['description', bossConfig.expectJobDescRegExpStr, job.jd],
+  ]
+    .map(([name, pattern, text]) => ({
+      name,
+      pattern: String(pattern ?? '').trim(),
+      text: String(text ?? ''),
+    }))
+    .filter(item => item.pattern)
+
+  if (!checks.length) {
+    return {
+      configured: false,
+      valid: true,
+      pass: true,
+      matches: [],
+      errors: [],
+      reason: 'no configured job regex',
+    }
+  }
+
+  const matches = []
+  const errors = []
+  for (const check of checks) {
+    try {
+      if (new RegExp(check.pattern, 'im').test(check.text)) {
+        matches.push({ name: check.name, pattern: check.pattern })
+      }
+    } catch (err) {
+      errors.push({ name: check.name, pattern: check.pattern, error: err?.message ?? String(err) })
+    }
+  }
+
+  const valid = errors.length === 0
+  const pass = valid && matches.length > 0
+  return {
+    configured: true,
+    valid,
+    pass,
+    matches,
+    errors,
+    reason: !valid
+      ? `invalid configured job regex: ${errors.map(item => `${item.name}: ${item.error}`).join('; ')}`
+      : pass
+        ? `configured job regex matched: ${matches.map(item => item.name).join(', ')}`
+        : 'configured job regex did not match',
   }
 }
 
 function hasRemoteSignal (text) {
   return /远程|居家|不坐班|remote|work from home/i.test(text) ||
     (/线上/i.test(text) && !/线上线下/i.test(text))
+}
+
+function jobContentText (job) {
+  return [
+    job.title,
+    job.company,
+    job.city,
+    job.salary,
+    job.experience,
+    job.degree,
+    job.labels?.join?.(' '),
+    job.jd,
+  ].filter(Boolean).join('\n')
 }
 
 function isJapaneseGreetingRule (rule) {
