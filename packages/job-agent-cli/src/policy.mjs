@@ -7,8 +7,8 @@ const genericKeywordTokens = new Set(['实习', '实习生', '远程', '线上',
 const categoryRules = [
   {
     category: 'japanese_translation',
-    pattern: /日语|日文|日译|中日|日中|翻译|本地化|字幕|游戏本地化/i,
-    required: [/日语|日文|翻译|本地化|字幕/i],
+    pattern: /日语|日文|日译|中日|日中|日本语|Japanese/i,
+    required: [/日语|日文|日译|中日|日中|日本语|Japanese/i],
   },
   {
     category: 'ai_agent',
@@ -36,6 +36,7 @@ export function selectGreeting (job, bossConfig) {
   const text = jobText(job)
   for (const rule of getGreetingRules(bossConfig)) {
     try {
+      if (isJapaneseGreetingRule(rule) && !hasJapaneseSignal(text)) continue
       if (new RegExp(rule.pattern, 'im').test(text)) {
         return { rule: rule.name || rule.pattern, message: rule.message }
       }
@@ -52,7 +53,7 @@ export function evaluateJobWithRules (job, bossConfig) {
   const category = inferCategory(text)
   const keywordMatch = matchConfiguredKeyword(job, bossConfig)
   const jdMatches = matchJdRequirements(text, category)
-  const remoteFit = /远程|线上|居家|不坐班|remote|work from home/i.test(text)
+  const remoteFit = hasRemoteSignal(text)
   const greeting = selectGreeting(job, bossConfig)
 
   const reasons = []
@@ -157,4 +158,17 @@ function testConfiguredRegex (job, bossConfig) {
   } catch (err) {
     return { pass: false, reason: `invalid configured title regex: ${err?.message ?? err}` }
   }
+}
+
+function hasRemoteSignal (text) {
+  return /远程|居家|不坐班|remote|work from home/i.test(text) ||
+    (/线上/i.test(text) && !/线上线下/i.test(text))
+}
+
+function isJapaneseGreetingRule (rule) {
+  return /日语|日文|日译|中日|日中|Japanese/i.test(`${rule.name}\n${rule.pattern}`)
+}
+
+function hasJapaneseSignal (text) {
+  return /日语|日文|日译|中日|日中|日本语|Japanese/i.test(text)
 }
