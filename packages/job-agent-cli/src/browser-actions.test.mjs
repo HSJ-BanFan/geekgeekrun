@@ -3,6 +3,7 @@ import { test } from 'node:test'
 
 import {
   evaluateChatTargetJobMatchGuard,
+  runCurrentJobBrowserActionsOnOpenPage,
   sendGreetingToCurrentSurfaceOrRecentChat,
 } from './browser-actions.mjs'
 
@@ -107,3 +108,339 @@ test('sendGreetingToCurrentSurfaceOrRecentChat skips fallback send when guard ca
     1
   )
 })
+
+test('runCurrentJobBrowserActions dry-run apply reports the job identity anchor without clicking', async () => {
+  let jobCardClicked = false
+  const page = createJobsPageFake({
+    currentProfile: {
+      jobId: 'other-job',
+      title: '其他岗位',
+      company: '示例科技',
+    },
+    jobList: [
+      { jobId: 'authorized-job', title: '后端开发', company: '示例科技' },
+    ],
+    onJobCardClick: () => {
+      jobCardClicked = true
+    },
+  })
+
+  const result = await runCurrentJobBrowserActionsOnOpenPage(page, {
+    shouldApply: true,
+    confirm: false,
+    expectedJob: {
+      jobId: 'authorized-job',
+      title: '后端开发',
+      company: '示例科技',
+    },
+    moveNext: false,
+  })
+
+  const startChatAction = result.actions.find(action => action.type === 'start_chat')
+  assert.equal(startChatAction.result.dryRun, true)
+  assert.equal(startChatAction.result.wouldRelocateByJobId, true)
+  assert.equal(startChatAction.result.jobIdentityAnchor, 'authorized-job')
+  assert.equal(startChatAction.result.confirmationRequired, true)
+  assert.equal(jobCardClicked, false)
+})
+
+test('runCurrentJobBrowserActions confirmed apply fails closed when the job identity anchor is missing', async () => {
+  const page = createJobsPageFake({
+    currentProfile: {
+      title: '后端开发',
+      company: '示例科技',
+    },
+  })
+
+  const result = await runCurrentJobBrowserActionsOnOpenPage(page, {
+    shouldApply: true,
+    confirm: true,
+    expectedJob: {
+      title: '后端开发',
+      company: '示例科技',
+    },
+    moveNext: true,
+  })
+
+  const startChatAction = result.actions.find(action => action.type === 'start_chat')
+  const sendGreetingAction = result.actions.find(action => action.type === 'send_greeting')
+  const nextJobAction = result.actions.find(action => action.type === 'next_job')
+  assert.equal(startChatAction.result.skipped, true)
+  assert.equal(startChatAction.result.reason, 'JOB_IDENTITY_ANCHOR_MISSING')
+  assert.equal(sendGreetingAction.result.skipped, true)
+  assert.equal(sendGreetingAction.result.reason, 'start chat skipped due to job relocation failure')
+  assert.equal(nextJobAction.result.skipped, true)
+  assert.equal(nextJobAction.result.reason, 'next job skipped due to job relocation failure')
+})
+
+test('runCurrentJobBrowserActions confirmed apply accepts the current detail when it already matches the job identity anchor', async () => {
+  let jobCardClicked = false
+  const page = createJobsPageFake({
+    currentProfile: {
+      jobId: 'authorized-job',
+      title: '后端开发',
+      company: '示例科技',
+    },
+    jobList: [
+      { jobId: 'authorized-job', title: '后端开发', company: '示例科技' },
+    ],
+    startChatButtonState: {
+      found: true,
+      text: '已沟通',
+      disabled: true,
+      canStart: false,
+    },
+    onJobCardClick: () => {
+      jobCardClicked = true
+    },
+  })
+
+  const result = await runCurrentJobBrowserActionsOnOpenPage(page, {
+    shouldApply: true,
+    confirm: true,
+    expectedJob: {
+      jobId: 'authorized-job',
+      title: '后端开发',
+      company: '示例科技',
+    },
+    moveNext: false,
+  })
+
+  const startChatAction = result.actions.find(action => action.type === 'start_chat')
+  assert.equal(startChatAction.result.reason, 'START_CHAT_UNAVAILABLE')
+  assert.equal(startChatAction.result.jobRelocation.method, 'current_detail')
+  assert.equal(startChatAction.result.jobRelocation.jobIdentityAnchor, 'authorized-job')
+  assert.equal(jobCardClicked, false)
+})
+
+test('runCurrentJobBrowserActions confirmed apply clicks a matching job card and verifies the detail pane', async () => {
+  const clickedJobIds = []
+  const page = createJobsPageFake({
+    currentProfile: {
+      jobId: 'other-job',
+      title: '其他岗位',
+      company: '示例科技',
+    },
+    jobList: [
+      { jobId: 'other-job', title: '其他岗位', company: '示例科技' },
+      { jobId: 'authorized-job', title: '后端开发', company: '示例科技' },
+    ],
+    startChatButtonState: {
+      found: true,
+      text: '已沟通',
+      disabled: true,
+      canStart: false,
+    },
+    onJobCardClick: (job) => {
+      clickedJobIds.push(job.jobId)
+    },
+  })
+
+  const result = await runCurrentJobBrowserActionsOnOpenPage(page, {
+    shouldApply: true,
+    confirm: true,
+    expectedJob: {
+      jobId: 'authorized-job',
+      title: '后端开发',
+      company: '示例科技',
+    },
+    moveNext: false,
+  })
+
+  const startChatAction = result.actions.find(action => action.type === 'start_chat')
+  assert.deepEqual(clickedJobIds, ['authorized-job'])
+  assert.equal(result.profile.jobId, 'authorized-job')
+  assert.equal(startChatAction.result.jobRelocation.method, 'job_card')
+  assert.equal(startChatAction.result.jobRelocation.jobIdentityAnchor, 'authorized-job')
+})
+
+test('runCurrentJobBrowserActions confirmed apply fails closed when relocation cannot find the job identity anchor', async () => {
+  let scrollCount = 0
+  const page = createJobsPageFake({
+    currentProfile: {
+      jobId: 'other-job',
+      title: '其他岗位',
+      company: '示例科技',
+    },
+    jobList: [
+      { jobId: 'other-job', title: '其他岗位', company: '示例科技' },
+    ],
+    onRelocationScroll: () => {
+      scrollCount += 1
+    },
+  })
+
+  const result = await runCurrentJobBrowserActionsOnOpenPage(page, {
+    shouldApply: true,
+    confirm: true,
+    expectedJob: {
+      jobId: 'authorized-job',
+      title: '后端开发',
+      company: '示例科技',
+    },
+    moveNext: true,
+  })
+
+  const startChatAction = result.actions.find(action => action.type === 'start_chat')
+  const nextJobAction = result.actions.find(action => action.type === 'next_job')
+  assert.equal(scrollCount, 5)
+  assert.equal(startChatAction.result.skipped, true)
+  assert.equal(startChatAction.result.reason, 'JOB_RELOCATION_NOT_FOUND')
+  assert.equal(nextJobAction.result.skipped, true)
+  assert.equal(nextJobAction.result.relocationFailureReason, 'JOB_RELOCATION_NOT_FOUND')
+})
+
+test('runCurrentJobBrowserActions confirmed apply fails closed when post-click detail verification mismatches', async () => {
+  const clickedJobIds = []
+  const page = createJobsPageFake({
+    currentProfile: {
+      jobId: 'other-job',
+      title: '其他岗位',
+      company: '示例科技',
+    },
+    jobList: [
+      { jobId: 'authorized-job', title: '后端开发', company: '示例科技' },
+    ],
+    resolveClickedProfile: () => ({
+      jobId: 'wrong-detail-job',
+      title: '错误详情岗位',
+      company: '示例科技',
+    }),
+    onJobCardClick: (job) => {
+      clickedJobIds.push(job.jobId)
+    },
+  })
+
+  const result = await runCurrentJobBrowserActionsOnOpenPage(page, {
+    shouldApply: true,
+    confirm: true,
+    expectedJob: {
+      jobId: 'authorized-job',
+      title: '后端开发',
+      company: '示例科技',
+    },
+    moveNext: true,
+  })
+
+  const startChatAction = result.actions.find(action => action.type === 'start_chat')
+  const nextJobAction = result.actions.find(action => action.type === 'next_job')
+  assert.deepEqual(clickedJobIds, ['authorized-job'])
+  assert.equal(startChatAction.result.skipped, true)
+  assert.equal(startChatAction.result.reason, 'JOB_RELOCATION_DETAIL_MISMATCH')
+  assert.equal(nextJobAction.result.skipped, true)
+  assert.equal(nextJobAction.result.relocationFailureReason, 'JOB_RELOCATION_DETAIL_MISMATCH')
+})
+
+test('runCurrentJobBrowserActions confirmed apply fails closed when post-click detail cannot confirm a job id', async () => {
+  const page = createJobsPageFake({
+    currentProfile: {
+      jobId: 'other-job',
+      title: '其他岗位',
+      company: '示例科技',
+    },
+    jobList: [
+      { jobId: 'authorized-job', title: '后端开发', company: '示例科技' },
+    ],
+    resolveClickedProfile: () => ({
+      title: '后端开发',
+      company: '示例科技',
+    }),
+  })
+
+  const result = await runCurrentJobBrowserActionsOnOpenPage(page, {
+    shouldApply: true,
+    confirm: true,
+    expectedJob: {
+      jobId: 'authorized-job',
+      title: '后端开发',
+      company: '示例科技',
+    },
+    moveNext: true,
+  })
+
+  const startChatAction = result.actions.find(action => action.type === 'start_chat')
+  const nextJobAction = result.actions.find(action => action.type === 'next_job')
+  assert.equal(startChatAction.result.skipped, true)
+  assert.equal(startChatAction.result.reason, 'JOB_RELOCATION_DETAIL_UNCONFIRMED')
+  assert.equal(nextJobAction.result.skipped, true)
+  assert.equal(nextJobAction.result.relocationFailureReason, 'JOB_RELOCATION_DETAIL_UNCONFIRMED')
+})
+
+function createJobsPageFake ({
+  currentProfile,
+  jobList = [],
+  startChatButtonState = {
+    found: false,
+    text: '',
+    disabled: true,
+    canStart: false,
+  },
+  onRelocationScroll = () => {},
+  resolveClickedProfile = job => job,
+  onJobCardClick = () => {},
+} = {}) {
+  let selectedProfile = currentProfile
+  return {
+    url () {
+      return 'https://www.zhipin.com/web/geek/jobs'
+    },
+    async evaluate (fn, arg) {
+      const source = String(fn)
+      if (arg === '.job-detail-box .op-btn.op-btn-chat') {
+        return {
+          ...startChatButtonState,
+          rect: startChatButtonState.found
+            ? { x: 0, y: 0, width: 100, height: 32 }
+            : null,
+        }
+      }
+      if (source.includes('scrollIntoView') && source.includes('querySelectorAll(selector)')) {
+        onRelocationScroll()
+        return null
+      }
+      if (source.includes('.page-jobs-main') && source.includes('.job-detail-box')) {
+        return {
+          url: this.url(),
+          pageQuery: '',
+          selectedJobData: selectedProfile,
+          targetJobData: {
+            jobInfo: selectedProfile,
+          },
+          visibleText: selectedProfile?.jd ?? '',
+        }
+      }
+      if (source.includes('querySelectorAll(selector)')) {
+        return {
+          currentJob: selectedProfile,
+          currentIndex: 0,
+          items: jobList.map((job, index) => ({
+            index,
+            className: index === 0 ? 'job-card-box active' : 'job-card-box',
+            text: job.jd ?? '',
+            data: job,
+          })),
+        }
+      }
+      return null
+    },
+    async $ (selector) {
+      if (selector === '.job-detail-box .op-btn.op-btn-chat') {
+        return null
+      }
+      return null
+    },
+    async $$ (selector) {
+      if (selector !== 'ul.rec-job-list li.job-card-box') return []
+      return jobList.map(job => ({
+        async evaluate () {},
+        async click () {
+          selectedProfile = resolveClickedProfile(job)
+          onJobCardClick(job)
+        },
+      }))
+    },
+    async waitForResponse () {
+      return null
+    },
+  }
+}

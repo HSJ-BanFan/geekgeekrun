@@ -32,6 +32,13 @@ const selectedConversationSelector = [
 const greetDialogSelector = '.greet-boss-dialog'
 const greetDialogInputSelector = 'textarea, input[type="text"], [contenteditable="true"], .chat-input'
 const greetDialogSendButtonSelector = '.greet-boss-footer .sure-btn, .greet-boss-footer .confirm-btn, .greet-boss-footer .btn-sure, .greet-boss-footer .btn-primary, .greet-boss-footer button:not(.cancel-btn)'
+const jobIdentityAnchorMissingReason = 'JOB_IDENTITY_ANCHOR_MISSING'
+const jobRelocationNotFoundReason = 'JOB_RELOCATION_NOT_FOUND'
+const jobRelocationDetailMismatchReason = 'JOB_RELOCATION_DETAIL_MISMATCH'
+const jobRelocationDetailUnconfirmedReason = 'JOB_RELOCATION_DETAIL_UNCONFIRMED'
+const jobRelocationFailureSendGreetingReason = 'start chat skipped due to job relocation failure'
+const jobRelocationFailureNextJobReason = 'next job skipped due to job relocation failure'
+const maxJobRelocationScrolls = 5
 
 export async function extractCurrentJobFromBrowser ({ headless = false, query = '', city = '' } = {}) {
   const { browser, page } = await openBrowser({ headless })
@@ -79,50 +86,55 @@ export async function runCurrentJobBrowserActions ({
   const { browser, page } = await openBrowser({ headless })
   try {
     await openJobsPage(page, { query, city })
-    const extraction = await extractCurrentJobOnPage(page)
-    const jobMatch = compareExpectedJob(extraction.profile, expectedJob)
-    const actions = []
+    return await runCurrentJobBrowserActionsOnOpenPage(page, {
+      shouldApply,
+      message,
+      imagePath,
+      confirm,
+      expectedJob,
+      moveNext,
+      beforeMoveNext,
+      query,
+      city,
+    })
+  } finally {
+    await browser.close().catch(() => {})
+  }
+}
 
-    if (!jobMatch.match) {
-      const mismatchResult = {
-        dryRun: !confirm,
-        skipped: true,
-        reason: 'JOB_MISMATCH',
-        jobMatch,
-        currentJob: extraction.profile,
-      }
-      if (shouldApply) {
-        actions.push({ type: 'start_chat', result: mismatchResult })
-        actions.push({ type: 'send_greeting', result: { skipped: true, reason: 'start chat skipped due to job mismatch' } })
-      } else {
-        actions.push({ type: 'skip_apply', result: mismatchResult })
-      }
-      if (moveNext) {
-        actions.push({ type: 'next_job', result: { skipped: true, reason: 'next job skipped due to job mismatch', jobMatch } })
-      }
-      if (beforeMoveNext) {
-        const result = await beforeMoveNext({ actions, profile: extraction.profile, jobMatch })
-        actions.splice(actions.length - (moveNext ? 1 : 0), 0, { type: 'audit_log', result })
-      }
-      return { dryRun: !confirm, profile: extraction.profile, jobMatch, actions }
-    }
+export async function runCurrentJobBrowserActionsOnOpenPage (page, {
+  shouldApply,
+  message,
+  imagePath,
+  confirm = false,
+  expectedJob = null,
+  moveNext = true,
+  beforeMoveNext = null,
+  query = '',
+  city = '',
+} = {}) {
+  const extraction = await extractCurrentJobOnPage(page)
+  const jobMatch = compareExpectedJob(extraction.profile, expectedJob)
+  const actions = []
+  const jobIdentityAnchor = getJobId(expectedJob)
 
-    if (shouldApply) {
-      const startChatResult = await startChatOnCurrentPage(page, {
-        confirm,
-        expectedJob,
-        currentProfile: extraction.profile,
-      })
-      const sendResult = !confirm
-        ? { dryRun: true, wouldSendMessage: Boolean(message), wouldUploadImage: Boolean(imagePath) }
-        : startChatResult.success
-          ? await sendGreetingToCurrentSurfaceOrRecentChat(page, { message, imagePath, authorizedJob: extraction.profile })
-          : { skipped: true, reason: 'start chat did not succeed' }
-      actions.push({ type: 'start_chat', result: startChatResult })
-      actions.push({ type: 'send_greeting', result: sendResult })
-    } else {
-      actions.push({ type: 'skip_apply', dryRun: !confirm, reason: 'final decision is not apply' })
+  if (shouldApply && !confirm) {
+    const startChatResult = {
+      dryRun: true,
+      wouldRelocateByJobId: Boolean(jobIdentityAnchor),
+      jobIdentityAnchor: jobIdentityAnchor || null,
+      confirmationRequired: true,
+      reason: jobIdentityAnchor ? undefined : jobIdentityAnchorMissingReason,
+      currentJob: extraction.profile,
+      jobMatch,
     }
+    const sendResult = {
+      dryRun: true,
+      wouldSendMessage: Boolean(message),
+      wouldUploadImage: Boolean(imagePath),
+    }
+    actions.push({ type: 'start_chat', result: startChatResult })
+    actions.push({ type: 'send_greeting', result: sendResult })
 
     if (beforeMoveNext) {
       const result = await beforeMoveNext({ actions, profile: extraction.profile, jobMatch })
@@ -135,9 +147,252 @@ export async function runCurrentJobBrowserActions ({
       actions.push({ type: 'next_job', result })
     }
 
+    return { dryRun: true, profile: extraction.profile, jobMatch, actions }
+  }
+
+  if (shouldApply && confirm) {
+    const jobRelocation = await relocateAuthorizedJobOnPage(page, {
+      authorizedJob: expectedJob,
+      currentProfile: extraction.profile,
+    })
+    if (!jobRelocation.match) {
+      const failureProfile = jobRelocation.profile ?? extraction.profile
+      pushRelocationFailureActions(actions, {
+        ...jobRelocation,
+        currentJob: extraction.profile,
+        jobMatch,
+        moveNext,
+      })
+      if (beforeMoveNext) {
+        const result = await beforeMoveNext({ actions, profile: failureProfile, jobMatch })
+        actions.splice(actions.length - (moveNext ? 1 : 0), 0, { type: 'audit_log', result })
+      }
+      return { dryRun: false, profile: failureProfile, jobMatch, actions }
+    }
+
+    const verifiedJobMatch = compareExpectedJob(jobRelocation.profile, expectedJob)
+    const startChatResult = await startChatOnCurrentPage(page, {
+      confirm,
+      expectedJob,
+      currentProfile: jobRelocation.profile,
+    })
+    startChatResult.jobRelocation = summarizeJobRelocation(jobRelocation)
+    const sendResult = startChatResult.success
+      ? await sendGreetingToCurrentSurfaceOrRecentChat(page, { message, imagePath, authorizedJob: jobRelocation.profile })
+      : { skipped: true, reason: 'start chat did not succeed' }
+    actions.push({ type: 'start_chat', result: startChatResult })
+    actions.push({ type: 'send_greeting', result: sendResult })
+
+    if (beforeMoveNext) {
+      const result = await beforeMoveNext({ actions, profile: jobRelocation.profile, jobMatch: verifiedJobMatch })
+      actions.push({ type: 'audit_log', result })
+    }
+
+    if (moveNext) {
+      await returnToJobsPage(page, { query, city })
+      const result = await moveToNextJobOnCurrentPage(page, { confirm })
+      actions.push({ type: 'next_job', result })
+    }
+
+    return { dryRun: false, profile: jobRelocation.profile, jobMatch: verifiedJobMatch, actions }
+  }
+
+  if (!jobMatch.match) {
+    const mismatchResult = {
+      dryRun: !confirm,
+      skipped: true,
+      reason: 'JOB_MISMATCH',
+      jobMatch,
+      currentJob: extraction.profile,
+    }
+    if (shouldApply) {
+      actions.push({ type: 'start_chat', result: mismatchResult })
+      actions.push({ type: 'send_greeting', result: { skipped: true, reason: 'start chat skipped due to job mismatch' } })
+    } else {
+      actions.push({ type: 'skip_apply', result: mismatchResult })
+    }
+    if (moveNext) {
+      actions.push({ type: 'next_job', result: { skipped: true, reason: 'next job skipped due to job mismatch', jobMatch } })
+    }
+    if (beforeMoveNext) {
+      const result = await beforeMoveNext({ actions, profile: extraction.profile, jobMatch })
+      actions.splice(actions.length - (moveNext ? 1 : 0), 0, { type: 'audit_log', result })
+    }
     return { dryRun: !confirm, profile: extraction.profile, jobMatch, actions }
-  } finally {
-    await browser.close().catch(() => {})
+  }
+
+  if (shouldApply) {
+    const startChatResult = await startChatOnCurrentPage(page, {
+      confirm,
+      expectedJob,
+      currentProfile: extraction.profile,
+    })
+    const sendResult = !confirm
+      ? { dryRun: true, wouldSendMessage: Boolean(message), wouldUploadImage: Boolean(imagePath) }
+      : startChatResult.success
+        ? await sendGreetingToCurrentSurfaceOrRecentChat(page, { message, imagePath, authorizedJob: extraction.profile })
+        : { skipped: true, reason: 'start chat did not succeed' }
+    actions.push({ type: 'start_chat', result: startChatResult })
+    actions.push({ type: 'send_greeting', result: sendResult })
+  } else {
+    actions.push({ type: 'skip_apply', dryRun: !confirm, reason: 'final decision is not apply' })
+  }
+
+  if (beforeMoveNext) {
+    const result = await beforeMoveNext({ actions, profile: extraction.profile, jobMatch })
+    actions.push({ type: 'audit_log', result })
+  }
+
+  if (moveNext) {
+    await returnToJobsPage(page, { query, city })
+    const result = await moveToNextJobOnCurrentPage(page, { confirm })
+    actions.push({ type: 'next_job', result })
+  }
+
+  return { dryRun: !confirm, profile: extraction.profile, jobMatch, actions }
+}
+
+async function relocateAuthorizedJobOnPage (page, {
+  authorizedJob,
+  currentProfile,
+} = {}) {
+  const jobIdentityAnchor = getJobId(authorizedJob)
+  if (!jobIdentityAnchor) {
+    return {
+      match: false,
+      reason: jobIdentityAnchorMissingReason,
+      jobIdentityAnchor: null,
+      profile: currentProfile,
+    }
+  }
+
+  if (getJobId(currentProfile) === jobIdentityAnchor) {
+    return {
+      match: true,
+      method: 'current_detail',
+      jobIdentityAnchor,
+      profile: currentProfile,
+    }
+  }
+
+  for (let scrollCount = 0; scrollCount <= maxJobRelocationScrolls; scrollCount += 1) {
+    const listInfo = await inspectJobListOnPage(page)
+    const item = listInfo.items.find(item => getJobId(item.profile) === jobIdentityAnchor)
+    if (item) {
+      const clickResult = await clickJobListItem(page, item.index)
+      if (!clickResult.moved) {
+        return {
+          match: false,
+          reason: jobRelocationNotFoundReason,
+          jobIdentityAnchor,
+          profile: currentProfile,
+          clickResult,
+        }
+      }
+      const detailJobId = getJobId(clickResult.profile)
+      if (!detailJobId) {
+        return {
+          match: false,
+          reason: jobRelocationDetailUnconfirmedReason,
+          jobIdentityAnchor,
+          profile: clickResult.profile,
+          clickedIndex: item.index,
+        }
+      }
+      if (detailJobId !== jobIdentityAnchor) {
+        return {
+          match: false,
+          reason: jobRelocationDetailMismatchReason,
+          jobIdentityAnchor,
+          profile: clickResult.profile,
+          clickedIndex: item.index,
+        }
+      }
+      return {
+        match: true,
+        method: 'job_card',
+        jobIdentityAnchor,
+        profile: clickResult.profile,
+        clickedIndex: item.index,
+        scrollCount,
+      }
+    }
+    if (scrollCount < maxJobRelocationScrolls) {
+      await scrollJobListForRelocation(page)
+    }
+  }
+
+  return {
+    match: false,
+    reason: jobRelocationNotFoundReason,
+    jobIdentityAnchor,
+    profile: currentProfile,
+  }
+}
+
+function summarizeJobRelocation (jobRelocation) {
+  return {
+    match: jobRelocation.match,
+    method: jobRelocation.method,
+    jobIdentityAnchor: jobRelocation.jobIdentityAnchor,
+    profile: jobReference(jobRelocation.profile),
+  }
+}
+
+async function scrollJobListForRelocation (page) {
+  await page.evaluate((selector) => {
+    const items = [...document.querySelectorAll(selector)]
+    items.at(-1)?.scrollIntoView?.({ behavior: 'smooth', block: 'end' })
+  }, jobItemSelector).catch(() => {})
+  await sleep(1500)
+}
+
+function pushRelocationFailureActions (actions, {
+  reason,
+  jobIdentityAnchor,
+  currentJob,
+  profile,
+  jobMatch,
+  moveNext,
+} = {}) {
+  const jobRelocation = {
+    match: false,
+    reason,
+    jobIdentityAnchor: jobIdentityAnchor || null,
+    profile: jobReference(profile ?? currentJob),
+  }
+  actions.push({
+    type: 'start_chat',
+    result: {
+      dryRun: false,
+      skipped: true,
+      success: false,
+      reason,
+      jobIdentityAnchor: jobIdentityAnchor || null,
+      currentJob,
+      jobRelocation,
+      jobMatch,
+    },
+  })
+  actions.push({
+    type: 'send_greeting',
+    result: {
+      skipped: true,
+      reason: jobRelocationFailureSendGreetingReason,
+      relocationFailureReason: reason,
+      jobRelocation,
+    },
+  })
+  if (moveNext) {
+    actions.push({
+      type: 'next_job',
+      result: {
+        skipped: true,
+        reason: jobRelocationFailureNextJobReason,
+        relocationFailureReason: reason,
+        jobRelocation,
+      },
+    })
   }
 }
 

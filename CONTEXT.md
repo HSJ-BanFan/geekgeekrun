@@ -44,6 +44,10 @@ _Avoid_: raw private data, opaque score
 A durable record of a job-agent run that preserves Decision Evidence and action outcomes without storing sensitive originals such as cookies, local storage, API keys, full resume text, greeting text, local resume image paths, or private local paths.
 _Avoid_: raw browser state, full resume archive, secret log
 
+**Job Identity Anchor**:
+The stable BOSS job identifier captured with Application Authorization and used to relocate or verify the authorized job before a real browser action. `jobId` is the canonical Job Identity Anchor for job-page actions.
+_Avoid_: list index, current page assumption, relative position
+
 **Job Match Guard**:
 A verification step that ensures the browser job or chat target still matches the job that received Application Authorization. Fallback sending is allowed only when the guard can preserve that match.
 _Avoid_: recent chat assumption, blind fallback send
