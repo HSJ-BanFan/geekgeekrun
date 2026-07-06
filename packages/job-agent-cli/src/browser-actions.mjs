@@ -12,8 +12,23 @@ const jobsPageUrl = 'https://www.zhipin.com/web/geek/jobs'
 const chatPageUrl = 'https://www.zhipin.com/web/geek/chat'
 const startChatButtonSelector = '.job-detail-box .op-btn.op-btn-chat'
 const jobItemSelector = 'ul.rec-job-list li.job-card-box'
+const chatConversationSelector = '.chat-conversation'
+const chatRecordSelector = '.chat-conversation .chat-record'
+const chatEditorSelector = '.chat-conversation .chat-im.chat-editor'
 const chatPageInputSelector = '.chat-conversation .message-controls .chat-input'
 const chatPageSendButtonSelector = '.chat-conversation .message-controls .chat-op .btn-send:not(.disabled)'
+const chatJobDetailSelector = '#main .chat-conversation [ka="geek_chat_job_detail"] .right-content'
+const selectedConversationSelector = [
+  '.user-list-content li.active',
+  '.user-list-content li.selected',
+  '.user-list-content li.cur',
+  '.user-list-content li[aria-selected="true"]',
+  '.user-list .user-list-content li.active',
+  '.user-list .user-list-content li.selected',
+  '.user-container .geek-item.active',
+  '.user-container .geek-item.selected',
+  '.user-container .geek-item.cur',
+].join(', ')
 const greetDialogSelector = '.greet-boss-dialog'
 const greetDialogInputSelector = 'textarea, input[type="text"], [contenteditable="true"], .chat-input'
 const greetDialogSendButtonSelector = '.greet-boss-footer .sure-btn, .greet-boss-footer .confirm-btn, .greet-boss-footer .btn-sure, .greet-boss-footer .btn-primary, .greet-boss-footer button:not(.cancel-btn)'
@@ -101,7 +116,7 @@ export async function runCurrentJobBrowserActions ({
       const sendResult = !confirm
         ? { dryRun: true, wouldSendMessage: Boolean(message), wouldUploadImage: Boolean(imagePath) }
         : startChatResult.success
-          ? await sendGreetingToCurrentSurfaceOrRecentChat(page, { message, imagePath })
+          ? await sendGreetingToCurrentSurfaceOrRecentChat(page, { message, imagePath, authorizedJob: extraction.profile })
           : { skipped: true, reason: 'start chat did not succeed' }
       actions.push({ type: 'start_chat', result: startChatResult })
       actions.push({ type: 'send_greeting', result: sendResult })
@@ -375,7 +390,7 @@ function summarizeAddFriendResponse (payload) {
   }
 }
 
-async function sendGreetingToCurrentSurfaceOrRecentChat (page, { message, imagePath }) {
+export async function sendGreetingToCurrentSurfaceOrRecentChat (page, { message, imagePath, authorizedJob = null } = {}) {
   const currentSurfaceResult = await sendGreetingOnCurrentSurface(page, { message, imagePath })
   if (currentSurfaceResult.textSent || currentSurfaceResult.imageUploaded) {
     return { ...currentSurfaceResult, fallbackUsed: false }
@@ -385,8 +400,321 @@ async function sendGreetingToCurrentSurfaceOrRecentChat (page, { message, imageP
   if (!clicked) {
     return { ...currentSurfaceResult, fallbackUsed: true, clickedRecentConversation: false }
   }
+  const jobMatchGuard = await inspectCurrentChatTargetJobMatchGuard(page, authorizedJob)
+  if (!jobMatchGuard.match) {
+    return {
+      ...currentSurfaceResult,
+      fallbackUsed: true,
+      clickedRecentConversation: true,
+      skipped: true,
+      reason: jobMatchGuard.reason,
+      jobMatchGuard,
+    }
+  }
   const fallbackResult = await sendGreetingOnCurrentSurface(page, { message, imagePath })
-  return { clickedRecentConversation: true, ...fallbackResult, fallbackUsed: true }
+  return { clickedRecentConversation: true, jobMatchGuard, ...fallbackResult, fallbackUsed: true }
+}
+
+async function inspectCurrentChatTargetJobMatchGuard (page, authorizedJob) {
+  let chatTarget = null
+  try {
+    chatTarget = await extractCurrentChatTargetOnPage(page)
+  } catch (err) {
+    return {
+      match: false,
+      reason: 'CHAT_TARGET_INSPECTION_FAILED',
+      comparedBy: 'none',
+      expected: jobReference(authorizedJob),
+      actual: null,
+      error: err?.message ?? String(err),
+    }
+  }
+  return evaluateChatTargetJobMatchGuard({ authorizedJob, chatTarget })
+}
+
+async function extractCurrentChatTargetOnPage (page) {
+  const raw = await page.evaluate((selectors) => {
+    const conversationNode = document.querySelector(selectors.chatEditorSelector) ??
+      document.querySelector(selectors.chatConversationSelector)
+    const conversation = conversationNode?.__vue__?.conversation$ ?? null
+    const selectedFriend = document.querySelector(selectors.chatConversationSelector)?.__vue__?.selectedFriend$ ?? null
+    const boss = document.querySelector(selectors.chatRecordSelector)?.__vue__?.boss ?? null
+    const selectedConversation = document.querySelector(selectors.selectedConversationSelector)
+    return {
+      url: location.href,
+      conversation: pickPrimitiveFields(conversation, [
+        'encryptJobId',
+        'jobId',
+        'jobName',
+        'positionName',
+        'position',
+        'title',
+        'brandName',
+        'companyName',
+        'encryptBossId',
+        'bossId',
+        'bossName',
+        'name',
+        'bossTitle',
+      ]),
+      selectedFriend: pickPrimitiveFields(selectedFriend, [
+        'encryptJobId',
+        'jobId',
+        'jobName',
+        'positionName',
+        'position',
+        'title',
+        'brandName',
+        'companyName',
+        'bossName',
+        'name',
+        'encryptBossId',
+        'bossId',
+      ]),
+      boss: pickPrimitiveFields(boss, [
+        'encryptBossId',
+        'bossId',
+        'name',
+        'bossName',
+        'title',
+        'position',
+      ]),
+      jobDetailText: document.querySelector(selectors.chatJobDetailSelector)?.textContent?.trim?.() ?? '',
+      selectedConversationText: selectedConversation?.textContent?.trim?.().replace(/\s+/g, ' ') ?? '',
+    }
+
+    function pickPrimitiveFields (source, keys) {
+      if (!source || typeof source !== 'object') return null
+      const output = {}
+      for (const key of keys) {
+        const value = source[key]
+        if (['string', 'number', 'boolean'].includes(typeof value)) {
+          output[key] = value
+        }
+      }
+      return Object.keys(output).length ? output : null
+    }
+  }, {
+    chatConversationSelector,
+    chatRecordSelector,
+    chatEditorSelector,
+    chatJobDetailSelector,
+    selectedConversationSelector,
+  })
+  return normalizeChatTarget(raw)
+}
+
+function normalizeChatTarget (raw = {}) {
+  const conversation = raw.conversation ?? {}
+  const selectedFriend = raw.selectedFriend ?? {}
+  const boss = raw.boss ?? {}
+  return {
+    jobId: firstString(
+      conversation.encryptJobId,
+      conversation.jobId,
+      selectedFriend.encryptJobId,
+      selectedFriend.jobId
+    ),
+    title: firstString(
+      conversation.jobName,
+      conversation.positionName,
+      conversation.position,
+      conversation.title,
+      selectedFriend.jobName,
+      selectedFriend.positionName,
+      selectedFriend.position,
+      selectedFriend.title
+    ),
+    company: firstString(
+      conversation.brandName,
+      conversation.companyName,
+      selectedFriend.brandName,
+      selectedFriend.companyName
+    ),
+    bossId: firstString(
+      boss.encryptBossId,
+      boss.bossId,
+      conversation.encryptBossId,
+      conversation.bossId
+    ),
+    bossName: firstString(
+      boss.name,
+      boss.bossName,
+      conversation.bossName
+    ),
+    bossTitle: firstString(
+      boss.title,
+      boss.position,
+      conversation.bossTitle
+    ),
+    chatTargetText: [raw.jobDetailText, raw.selectedConversationText].filter(Boolean).join('\n'),
+  }
+}
+
+export function evaluateChatTargetJobMatchGuard ({ authorizedJob, chatTarget } = {}) {
+  if (!authorizedJob) {
+    return {
+      match: false,
+      reason: 'AUTHORIZED_JOB_UNCONFIRMED',
+      comparedBy: 'none',
+      expected: null,
+      actual: jobReference(chatTarget),
+    }
+  }
+  if (!chatTarget) {
+    return {
+      match: false,
+      reason: 'CHAT_TARGET_NOT_FOUND',
+      comparedBy: 'none',
+      expected: jobReference(authorizedJob),
+      actual: null,
+    }
+  }
+
+  const jobComparison = compareJobForChatGuard(authorizedJob, chatTarget)
+  if (!jobComparison.canCompare) {
+    return {
+      match: false,
+      reason: 'CHAT_TARGET_JOB_UNCONFIRMED',
+      comparedBy: jobComparison.comparedBy,
+      expected: jobReference(authorizedJob),
+      actual: jobReference(chatTarget),
+      jobComparison,
+    }
+  }
+  if (!jobComparison.match) {
+    return {
+      match: false,
+      reason: 'CHAT_TARGET_JOB_MISMATCH',
+      comparedBy: jobComparison.comparedBy,
+      expected: jobReference(authorizedJob),
+      actual: jobReference(chatTarget),
+      jobComparison,
+    }
+  }
+
+  const bossComparison = compareBossForChatGuard(authorizedJob, chatTarget)
+  if (!bossComparison.canCompare) {
+    return {
+      match: false,
+      reason: 'CHAT_TARGET_BOSS_UNCONFIRMED',
+      comparedBy: bossComparison.comparedBy,
+      expected: jobReference(authorizedJob),
+      actual: jobReference(chatTarget),
+      jobComparison,
+      bossComparison,
+    }
+  }
+  if (!bossComparison.match) {
+    return {
+      match: false,
+      reason: 'CHAT_TARGET_BOSS_MISMATCH',
+      comparedBy: bossComparison.comparedBy,
+      expected: jobReference(authorizedJob),
+      actual: jobReference(chatTarget),
+      jobComparison,
+      bossComparison,
+    }
+  }
+
+  return {
+    match: true,
+    reason: 'CHAT_TARGET_MATCHED_AUTHORIZED_JOB',
+    comparedBy: `${jobComparison.comparedBy}+${bossComparison.comparedBy}`,
+    expected: jobReference(authorizedJob),
+    actual: jobReference(chatTarget),
+    jobComparison,
+    bossComparison,
+  }
+}
+
+function compareJobForChatGuard (expected, actual) {
+  const expectedJobId = getJobId(expected)
+  const actualJobId = getJobId(actual)
+  if (expectedJobId && actualJobId) {
+    return {
+      canCompare: true,
+      match: expectedJobId === actualJobId,
+      comparedBy: 'jobId',
+      expected: expectedJobId,
+      actual: actualJobId,
+    }
+  }
+
+  const expectedTitle = normalizeComparable(getJobTitle(expected))
+  const actualTitle = normalizeComparable(getJobTitle(actual))
+  const expectedCompany = normalizeComparable(getCompany(expected))
+  const actualCompany = normalizeComparable(getCompany(actual))
+  if (expectedTitle && actualTitle) {
+    const titleMatch = expectedTitle === actualTitle
+    const companyMatch = !expectedCompany || !actualCompany || expectedCompany === actualCompany
+    return {
+      canCompare: true,
+      match: titleMatch && companyMatch,
+      comparedBy: expectedCompany && actualCompany ? 'title+company' : 'title',
+      expected: { title: expectedTitle, company: expectedCompany || undefined },
+      actual: { title: actualTitle, company: actualCompany || undefined },
+    }
+  }
+
+  const actualText = normalizeComparable(actual?.chatTargetText)
+  if (expectedTitle && actualText) {
+    const titleMatch = actualText.includes(expectedTitle)
+    const companyMatch = !expectedCompany || actualText.includes(expectedCompany)
+    return {
+      canCompare: true,
+      match: titleMatch && companyMatch,
+      comparedBy: expectedCompany ? 'title+company-in-chat-target-text' : 'title-in-chat-target-text',
+      expected: { title: expectedTitle, company: expectedCompany || undefined },
+      actual: {
+        chatTargetTextLength: actualText.length,
+        titleFound: titleMatch,
+        companyFound: expectedCompany ? companyMatch : undefined,
+      },
+    }
+  }
+
+  return {
+    canCompare: false,
+    match: false,
+    comparedBy: 'insufficient-job-fields',
+    expected: jobReference(expected),
+    actual: jobReference(actual),
+  }
+}
+
+function compareBossForChatGuard (expected, actual) {
+  const expectedBossId = getBossId(expected)
+  const actualBossId = getBossId(actual)
+  if (expectedBossId && actualBossId) {
+    return {
+      canCompare: true,
+      match: expectedBossId === actualBossId,
+      comparedBy: 'bossId',
+      expected: expectedBossId,
+      actual: actualBossId,
+    }
+  }
+
+  const expectedBossName = normalizeComparable(getBossName(expected))
+  const actualBossName = normalizeComparable(getBossName(actual))
+  if (expectedBossName && actualBossName) {
+    return {
+      canCompare: true,
+      match: expectedBossName === actualBossName,
+      comparedBy: 'bossName',
+      expected: expectedBossName,
+      actual: actualBossName,
+    }
+  }
+
+  return {
+    canCompare: false,
+    match: false,
+    comparedBy: 'insufficient-boss-fields',
+    expected: jobReference(expected),
+    actual: jobReference(actual),
+  }
 }
 
 async function openBrowser ({ headless = false } = {}) {
@@ -732,18 +1060,20 @@ async function clickJobListItem (page, index) {
 
 function compareExpectedJob (actual, expected) {
   if (!expected) return { match: true, comparedBy: 'none' }
-  if (actual?.jobId && expected?.jobId) {
+  const actualJobId = getJobId(actual)
+  const expectedJobId = getJobId(expected)
+  if (actualJobId && expectedJobId) {
     return {
-      match: actual.jobId === expected.jobId,
+      match: actualJobId === expectedJobId,
       comparedBy: 'jobId',
       expected: jobReference(expected),
       actual: jobReference(actual),
     }
   }
-  const actualTitle = normalizeComparable(actual?.title)
-  const expectedTitle = normalizeComparable(expected?.title)
-  const actualCompany = normalizeComparable(actual?.company)
-  const expectedCompany = normalizeComparable(expected?.company)
+  const actualTitle = normalizeComparable(getJobTitle(actual))
+  const expectedTitle = normalizeComparable(getJobTitle(expected))
+  const actualCompany = normalizeComparable(getCompany(actual))
+  const expectedCompany = normalizeComparable(getCompany(expected))
   if (actualTitle && expectedTitle) {
     const titleMatch = actualTitle === expectedTitle
     const companyMatch = !expectedCompany || !actualCompany || actualCompany === expectedCompany
@@ -768,8 +1098,114 @@ function normalizeComparable (value) {
 
 function jobReference (job) {
   return {
-    jobId: job?.jobId,
-    title: job?.title,
-    company: job?.company,
+    jobId: getJobId(job) || undefined,
+    title: getJobTitle(job) || undefined,
+    company: getCompany(job) || undefined,
+    bossId: getBossId(job) || undefined,
+    bossName: getBossName(job) || undefined,
+    bossTitle: getBossTitle(job) || undefined,
   }
+}
+
+function getJobId (job) {
+  return firstString(
+    job?.jobId,
+    job?.encryptJobId,
+    job?.encryptId,
+    job?.raw?.jobId,
+    job?.raw?.encryptJobId,
+    job?.raw?.encryptId,
+    job?.raw?.jobInfo?.encryptId,
+    job?.raw?.jobInfo?.jobId,
+    job?.raw?.selectedJobData?.encryptId,
+    job?.raw?.selectedJobData?.jobId,
+    job?.raw?.selectedJobData?.encryptJobId,
+    job?.raw?.targetJobData?.jobInfo?.encryptId,
+    job?.raw?.targetJobData?.jobInfo?.jobId
+  )
+}
+
+function getJobTitle (job) {
+  return firstString(
+    job?.title,
+    job?.jobName,
+    job?.positionName,
+    job?.raw?.jobName,
+    job?.raw?.title,
+    job?.raw?.positionName,
+    job?.raw?.jobInfo?.jobName,
+    job?.raw?.jobInfo?.title,
+    job?.raw?.jobInfo?.positionName,
+    job?.raw?.selectedJobData?.jobName,
+    job?.raw?.selectedJobData?.title,
+    job?.raw?.selectedJobData?.positionName,
+    job?.raw?.targetJobData?.jobInfo?.jobName,
+    job?.raw?.targetJobData?.jobInfo?.title,
+    job?.raw?.targetJobData?.jobInfo?.positionName
+  )
+}
+
+function getCompany (job) {
+  return firstString(
+    job?.company,
+    job?.companyName,
+    job?.brandName,
+    job?.raw?.company,
+    job?.raw?.companyName,
+    job?.raw?.brandName,
+    job?.raw?.jobInfo?.brandName,
+    job?.raw?.selectedJobData?.brandName,
+    job?.raw?.targetJobData?.brandName,
+    job?.raw?.targetJobData?.jobInfo?.brandName
+  )
+}
+
+function getBossId (job) {
+  return firstString(
+    job?.bossId,
+    job?.encryptBossId,
+    job?.raw?.bossId,
+    job?.raw?.encryptBossId,
+    job?.raw?.bossInfo?.encryptBossId,
+    job?.raw?.bossInfo?.bossId,
+    job?.raw?.targetJobData?.bossInfo?.encryptBossId,
+    job?.raw?.targetJobData?.bossInfo?.bossId,
+    job?.raw?.selectedJobData?.bossInfo?.encryptBossId,
+    job?.raw?.selectedJobData?.bossInfo?.bossId
+  )
+}
+
+function getBossName (job) {
+  return firstString(
+    job?.bossName,
+    job?.name,
+    job?.raw?.bossName,
+    job?.raw?.bossInfo?.name,
+    job?.raw?.bossInfo?.bossName,
+    job?.raw?.targetJobData?.bossInfo?.name,
+    job?.raw?.targetJobData?.bossInfo?.bossName,
+    job?.raw?.selectedJobData?.bossInfo?.name,
+    job?.raw?.selectedJobData?.bossInfo?.bossName
+  )
+}
+
+function getBossTitle (job) {
+  return firstString(
+    job?.bossTitle,
+    job?.raw?.bossTitle,
+    job?.raw?.bossInfo?.title,
+    job?.raw?.bossInfo?.position,
+    job?.raw?.targetJobData?.bossInfo?.title,
+    job?.raw?.targetJobData?.bossInfo?.position,
+    job?.raw?.selectedJobData?.bossInfo?.title,
+    job?.raw?.selectedJobData?.bossInfo?.position
+  )
+}
+
+function firstString (...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim()
+    if (typeof value === 'number') return String(value)
+  }
+  return ''
 }

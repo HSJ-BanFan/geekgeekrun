@@ -8,7 +8,7 @@
     "ggr": "./bin/ggr.mjs"
   },
   "scripts": {
-    "test": "node --test src/candidate-profile.test.mjs src/policy.test.mjs src/final-decision.test.mjs",
+    "test": "node --test src/candidate-profile.test.mjs src/policy.test.mjs src/final-decision.test.mjs src/browser-actions.test.mjs",
     "check": "node --check bin/ggr.mjs && node --check src/config.mjs && node --check src/job-profile.mjs && node --check src/candidate-profile.mjs && node --check src/policy.mjs && node --check src/llm-evaluator.mjs && node --check src/final-decision.mjs && node --check src/browser-actions.mjs && node --check src/audit-log.mjs"
   },
   "dependencies": {
