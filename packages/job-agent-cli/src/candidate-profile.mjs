@@ -43,7 +43,6 @@ export function buildCandidateProfile (bossConfig = {}) {
   const intentText = [
     resume?.content?.expectJob,
     resume?.content?.userDescription,
-    searchKeywords.join('\n'),
     greetingRules.map(rule => `${rule.name}\n${rule.pattern}`).join('\n'),
   ].filter(Boolean).join('\n')
 
