@@ -7,6 +7,7 @@ import { loadRuntimeConfig, getEnabledSearchKeywords, getGreetingRules, getResum
 import { normalizeJobProfile } from '../src/job-profile.mjs'
 import { evaluateJobWithRules, selectGreeting } from '../src/policy.mjs'
 import { evaluateJobWithLlm } from '../src/llm-evaluator.mjs'
+import { resolveFinalDecision } from '../src/final-decision.mjs'
 import { buildCandidateProfile, summarizeCandidateProfile } from '../src/candidate-profile.mjs'
 import {
   extractCurrentJobFromBrowser,
@@ -301,99 +302,6 @@ async function readJobFromArgs (argv) {
     city: argv.city ?? '',
     salary: argv.salary ?? '',
   })
-}
-
-function resolveFinalDecision (ruleEvaluation, llmEvaluation) {
-  if (ruleEvaluation?.hardReject) {
-    return {
-      decision: 'skip',
-      source: 'rules',
-      reason: 'hard reject boundary cannot be upgraded by llm',
-    }
-  }
-  const llmDecision = typeof llmEvaluation?.decision === 'string'
-    ? llmEvaluation.decision.trim().toLowerCase()
-    : ''
-  const requiresLlmFinalDecision = Boolean(
-    ruleEvaluation?.requiresLlmFinalDecision ||
-    ruleEvaluation?.techStackAssessment?.requiresLlm
-  )
-  if (requiresLlmFinalDecision) {
-    if (!llmEvaluation || llmEvaluation.skipped) {
-      return {
-        decision: 'uncertain',
-        source: 'rules',
-        reason: 'llm final decision required before auto-apply',
-      }
-    }
-    const invalidReason = validateRequiredLlmJudgment(llmEvaluation, ruleEvaluation, llmDecision)
-    if (invalidReason) {
-      return {
-        decision: 'uncertain',
-        source: 'llm',
-        reason: invalidReason,
-      }
-    }
-  }
-  if (['apply', 'skip', 'uncertain'].includes(llmDecision)) {
-    return {
-      decision: llmDecision,
-      source: 'llm',
-      reason: 'llm decision applied after candidate profile and rule boundary check',
-    }
-  }
-  if (requiresLlmFinalDecision) {
-    return {
-      decision: 'uncertain',
-      source: 'rules',
-      reason: 'missing llm decision for candidate profile final judgment',
-    }
-  }
-  return {
-    decision: ruleEvaluation?.decision ?? 'uncertain',
-    source: 'rules',
-    reason: llmEvaluation?.skipped ? llmEvaluation.reason : 'no llm decision',
-  }
-}
-
-function validateRequiredLlmJudgment (llmEvaluation, ruleEvaluation, llmDecision) {
-  if (llmEvaluation?.parseError) return `llm response parse error: ${llmEvaluation.parseError}`
-  if (!['apply', 'skip', 'uncertain'].includes(llmDecision)) {
-    return 'llm decision is missing or invalid'
-  }
-  if (ruleEvaluation?.requiresLlmFinalDecision) {
-    const missing = [
-      ['resume_fit', llmEvaluation.resume_fit ?? llmEvaluation.resumeFit],
-      ['intent_fit', llmEvaluation.intent_fit ?? llmEvaluation.intentFit],
-      ['keyword_context_fit', llmEvaluation.keyword_context_fit ?? llmEvaluation.keywordContextFit],
-    ]
-      .filter(([, value]) => !hasLlmJudgment(value))
-      .map(([name]) => name)
-    if (missing.length) return `llm missing required fit judgment: ${missing.join(', ')}`
-  }
-  const techStackAssessment = getLlmTechStackAssessment(llmEvaluation)
-  if (!hasLlmJudgment(techStackAssessment?.explanation)) {
-    return 'llm missing tech stack assessment explanation'
-  }
-  if ((ruleEvaluation?.techStackAssessment?.terms ?? []).length &&
-    typeof techStackAssessment?.is_core_required !== 'boolean') {
-    return 'llm did not explain whether attention tech stack terms are core/required'
-  }
-  return ''
-}
-
-function hasLlmJudgment (value) {
-  if (typeof value === 'string') return Boolean(value.trim())
-  if (!value || typeof value !== 'object') return false
-  return Object.values(value).some(item => {
-    if (Array.isArray(item)) return item.length > 0
-    if (typeof item === 'string') return Boolean(item.trim())
-    return item != null
-  })
-}
-
-function getLlmTechStackAssessment (llmEvaluation) {
-  return llmEvaluation?.tech_stack_assessment ?? llmEvaluation?.techStackAssessment ?? null
 }
 
 function readJsonFile (filePath) {
