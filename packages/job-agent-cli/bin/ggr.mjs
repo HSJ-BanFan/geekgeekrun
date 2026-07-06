@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import process from 'node:process'
 import util from 'node:util'
 import minimist from 'minimist'
-import { loadRuntimeConfig, getEnabledSearchKeywords, getGreetingRules, getResumeImagePath } from '../src/config.mjs'
+import { loadRuntimeConfig, getEnabledRecallKeywords, getGreetingRules, getResumeImagePath } from '../src/config.mjs'
 import { normalizeJobProfile } from '../src/job-profile.mjs'
 import { evaluateJobWithRules, selectGreeting } from '../src/policy.mjs'
 import { evaluateJobWithLlm } from '../src/llm-evaluator.mjs'
@@ -24,7 +24,7 @@ const argv = minimist(process.argv.slice(2), {
     'job',
     'title',
     'jd',
-    'keyword',
+    'recall-keyword',
     'city',
     'salary',
     'event',
@@ -79,8 +79,8 @@ function snapshot () {
     command: 'snapshot',
     storageFilePath,
     candidateProfile: summarizeCandidateProfile(candidateProfile),
-    keywordCount: getEnabledSearchKeywords(boss).length,
-    keywords: getEnabledSearchKeywords(boss),
+    recallKeywordCount: getEnabledRecallKeywords(boss).length,
+    recallKeywords: getEnabledRecallKeywords(boss),
     staticConditionCount: boss.staticCombineRecommendJobFilterConditions?.length ?? 0,
     combineRecommendJobFilterType: boss.combineRecommendJobFilterType,
     rotateJobSourceAfterChatStartup: boss.rotateJobSourceAfterChatStartup,
@@ -298,7 +298,7 @@ async function readJobFromArgs (argv) {
   return normalizeJobProfile({
     title: argv.title ?? '',
     jd: argv.jd ?? '',
-    sourceKeyword: argv.keyword ?? '',
+    recallKeyword: argv['recall-keyword'] ?? '',
     city: argv.city ?? '',
     salary: argv.salary ?? '',
   })
@@ -310,7 +310,7 @@ function readJsonFile (filePath) {
 
 function browserJobSourceOptions (argv) {
   return {
-    query: argv.keyword ?? '',
+    query: argv['recall-keyword'] ?? '',
     city: argv.city ?? '',
   }
 }
@@ -320,7 +320,7 @@ function readOptionalJsonFile (filePath) {
 }
 
 function hasJobArgs (argv) {
-  return Boolean(argv.job || argv.title || argv.jd || argv.keyword || argv.city || argv.salary)
+  return Boolean(argv.job || argv.title || argv.jd || argv['recall-keyword'] || argv.city || argv.salary)
 }
 
 function normalizeErrors (value) {
@@ -345,14 +345,14 @@ function usage () {
     commands: [
       'ggr snapshot',
       'ggr extract-job --job job.json',
-      'ggr extract-job --from-browser [--keyword keyword] [--city code]',
+      'ggr extract-job --from-browser [--recall-keyword value] [--city code]',
       'ggr evaluate-job --job job.json [--llm]',
-      'ggr start-chat --from-browser [--keyword keyword] [--city code] [--confirm]',
+      'ggr start-chat --from-browser [--recall-keyword value] [--city code] [--confirm]',
       'ggr send-greeting --job job.json [--confirm]',
-      'ggr next-job [--keyword keyword] [--city code] [--confirm]',
+      'ggr next-job [--recall-keyword value] [--city code] [--confirm]',
       'ggr audit-log [--event event.json]',
       'ggr run-once --job job.json [--llm] [--confirm]',
-      'ggr run-once --from-browser [--keyword keyword] [--city code] [--llm] [--confirm]',
+      'ggr run-once --from-browser [--recall-keyword value] [--city code] [--llm] [--confirm]',
     ],
   }
 }

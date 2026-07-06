@@ -20,7 +20,7 @@ test('buildAuditRecord summarizes JD text without storing the raw JD field', () 
       title: 'Python Backend Intern',
       company: 'Example Co',
       jd: longJd,
-      sourceKeyword: 'Python intern',
+      recallKeyword: 'Python intern',
     },
     finalDecision: { decision: 'uncertain' },
   })
@@ -42,7 +42,7 @@ test('sanitizeForAudit compresses nested JD text in direct audit events', () => 
       jobDescription: longJd,
     },
     ruleEvaluation: {
-      techStackAssessment: {
+      attentionTechnologyAssessment: {
         evidence: [
           { segment: `${'Long evidence segment. '.repeat(20)}RAW_JD_TAIL_SHOULD_NOT_APPEAR` },
         ],
@@ -53,5 +53,5 @@ test('sanitizeForAudit compresses nested JD text in direct audit events', () => 
   assert.equal(typeof sanitized.profile.jd, 'object')
   assert.equal(typeof sanitized.profile.jobDescription, 'object')
   assert.equal(JSON.stringify(sanitized).includes('RAW_JD_TAIL_SHOULD_NOT_APPEAR'), false)
-  assert.ok(sanitized.ruleEvaluation.techStackAssessment.evidence[0].segment.length <= 160)
+  assert.ok(sanitized.ruleEvaluation.attentionTechnologyAssessment.evidence[0].segment.length <= 160)
 })

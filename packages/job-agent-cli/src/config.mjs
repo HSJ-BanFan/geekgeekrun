@@ -8,7 +8,7 @@ export function loadRuntimeConfig () {
   return { boss, llm, storageFilePath }
 }
 
-export function getEnabledSearchKeywords (bossConfig) {
+export function getEnabledRecallKeywords (bossConfig) {
   const source = (bossConfig.jobSourceList ?? []).find(item => item?.type === 'search' && item?.enabled)
   return (source?.children ?? [])
     .filter(item => item?.enabled && String(item?.keyword ?? '').trim())

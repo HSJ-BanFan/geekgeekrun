@@ -5,7 +5,7 @@ import { resolveFinalDecision, validateRequiredLlmJudgment } from './final-decis
 
 const requiredRuleEvaluation = {
   requiresLlmFinalDecision: true,
-  techStackAssessment: {
+  attentionTechnologyAssessment: {
     requiresLlm: false,
     terms: [],
   },
@@ -16,19 +16,18 @@ function completeLlmEvaluation (overrides = {}) {
     decision: 'apply',
     resume_fit: 'Resume shows Python backend project evidence.',
     intent_fit: 'JD aligns with expected Python backend internship.',
-    recall_context: 'Job was recalled from the Python backend internship search keyword.',
-    tech_stack_assessment: {
-      explanation: 'Core stack is Python/FastAPI and overlaps with candidate profile.',
+    recall_context: 'Job was recalled from the Python backend internship Recall Keyword.',
+    attention_technology_assessment: {
+      explanation: 'Core Attention Technologies are Python/FastAPI and overlap with candidate profile.',
       is_core_required: null,
     },
     ...overrides,
   }
 }
 
-test('validateRequiredLlmJudgment requires recall_context instead of keyword_context_fit', () => {
+test('validateRequiredLlmJudgment requires recall_context', () => {
   const missingRecallContext = completeLlmEvaluation({
     recall_context: undefined,
-    keyword_context_fit: 'Legacy keyword fit explanation is no longer part of the schema.',
   })
 
   assert.equal(

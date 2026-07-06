@@ -189,7 +189,7 @@ async function extractCurrentJobOnPage (page) {
     ...(raw.targetJobData ?? {}),
     ...(raw.selectedJobData ?? {}),
     jd: raw.visibleText,
-    sourceKeyword: raw.pageQuery,
+    recallKeyword: raw.pageQuery,
   })
   return { profile, raw }
 }

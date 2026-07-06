@@ -78,7 +78,7 @@ export function buildAuditRecord ({
       ? {
           source: extraction.source,
           rawUrl: extraction.raw?.url,
-          pageQuery: extraction.raw?.pageQuery,
+          recallKeyword: extraction.profile?.recallKeyword ?? extraction.raw?.pageQuery,
         }
       : null,
     profile: summarizeProfile(profile ?? extraction?.profile),
@@ -157,7 +157,7 @@ function summarizeProfile (profile) {
     jdEvidenceSnippets: jdAudit.evidenceSnippets,
     jdOriginalCharacterCount: jdAudit.originalCharacterCount,
     jdOmittedCharacterCount: jdAudit.omittedCharacterCount,
-    sourceKeyword: profile.sourceKeyword,
+    recallKeyword: profile.recallKeyword,
     bossName: profile.bossName,
     bossTitle: profile.bossTitle,
   }

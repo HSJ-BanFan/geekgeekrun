@@ -11,7 +11,7 @@ export function resolveFinalDecision (ruleEvaluation, llmEvaluation) {
     : ''
   const requiresLlmFinalDecision = Boolean(
     ruleEvaluation?.requiresLlmFinalDecision ||
-    ruleEvaluation?.techStackAssessment?.requiresLlm
+    ruleEvaluation?.attentionTechnologyAssessment?.requiresLlm
   )
   if (requiresLlmFinalDecision) {
     if (!llmEvaluation || llmEvaluation.skipped) {
@@ -66,13 +66,13 @@ export function validateRequiredLlmJudgment (llmEvaluation, ruleEvaluation, llmD
       .map(([name]) => name)
     if (missing.length) return `llm missing required judgment/context: ${missing.join(', ')}`
   }
-  const techStackAssessment = getLlmTechStackAssessment(llmEvaluation)
-  if (!hasLlmExplanation(techStackAssessment?.explanation)) {
-    return 'llm missing tech stack assessment explanation'
+  const attentionTechnologyAssessment = getLlmAttentionTechnologyAssessment(llmEvaluation)
+  if (!hasLlmExplanation(attentionTechnologyAssessment?.explanation)) {
+    return 'llm missing attention technology assessment explanation'
   }
-  if ((ruleEvaluation?.techStackAssessment?.terms ?? []).length &&
-    typeof techStackAssessment?.is_core_required !== 'boolean') {
-    return 'llm did not explain whether attention tech stack terms are core/required'
+  if ((ruleEvaluation?.attentionTechnologyAssessment?.terms ?? []).length &&
+    typeof attentionTechnologyAssessment?.is_core_required !== 'boolean') {
+    return 'llm did not explain whether Attention Technology terms are core/required'
   }
   return ''
 }
@@ -87,6 +87,6 @@ function hasLlmExplanation (value) {
   })
 }
 
-function getLlmTechStackAssessment (llmEvaluation) {
-  return llmEvaluation?.tech_stack_assessment ?? llmEvaluation?.techStackAssessment ?? null
+function getLlmAttentionTechnologyAssessment (llmEvaluation) {
+  return llmEvaluation?.attention_technology_assessment ?? llmEvaluation?.attentionTechnologyAssessment ?? null
 }

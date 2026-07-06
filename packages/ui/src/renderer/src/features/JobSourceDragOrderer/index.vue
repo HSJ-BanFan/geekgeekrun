@@ -95,7 +95,7 @@
                   type="text"
                   @click="
                     () => {
-                      addSearchKeyword(element)
+                      addRecallKeyword(element)
                       gtagRenderer('job-source-search-kw-added', {
                         kwListLength: element.children?.length
                       })
@@ -131,7 +131,7 @@
               }
             "
           >
-            <template #item="{ element: searchItem, index }">
+            <template #item="{ element: recallKeywordItem, index }">
               <li class="list-group-item">
                 <div flex flex-items-center>
                   <span class="drag-handle-wrap">
@@ -140,8 +140,8 @@
                   <span class="inner-content">
                     <div flex w-full>
                       <el-switch
-                        v-if="element.enabled && searchItem.keyword?.trim()"
-                        v-model="searchItem.enabled"
+                        v-if="element.enabled && recallKeywordItem.keyword?.trim()"
+                        v-model="recallKeywordItem.enabled"
                         mr10px
                         active-text="启用"
                         inactive-text="禁用"
@@ -158,7 +158,7 @@
                         inline-prompt
                         @click="
                           () => {
-                            if (!searchItem.keyword?.trim()) {
+                            if (!recallKeywordItem.keyword?.trim()) {
                               Message.info({
                                 message: '该条关键词为空，请输入要搜索的关键词',
                                 grouping: true
@@ -174,13 +174,13 @@
                         "
                       />
                       <el-input
-                        v-model="searchItem.keyword"
+                        v-model="recallKeywordItem.keyword"
                         maxlength="100"
                         @blur="
                           () => {
-                            searchItem.keyword = searchItem.keyword?.trim() ?? ''
+                            recallKeywordItem.keyword = recallKeywordItem.keyword?.trim() ?? ''
                             gtagRenderer('job-source-search-kw-input-blurred', {
-                              contentLength: searchItem.keyword?.length
+                              contentLength: recallKeywordItem.keyword?.length
                             })
                           }
                         "
@@ -194,10 +194,10 @@
                       link
                       @click="
                         () => {
-                          removeSearchKeywordByIndex(element, index)
+                          removeRecallKeywordByIndex(element, index)
                           gtagRenderer('job-source-search-kw-removed', {
                             itemIndex: index,
-                            contentLength: searchItem.keyword?.length
+                            contentLength: recallKeywordItem.keyword?.length
                           })
                         }
                       "
@@ -240,7 +240,7 @@ const dragOptions = computed(() => {
   }
 })
 
-function addSearchKeyword(item) {
+function addRecallKeyword(item) {
   if (!item.children) {
     item.children = []
   }
@@ -252,10 +252,10 @@ function addSearchKeyword(item) {
   })
 }
 
-function removeSearchKeywordByIndex(item, index) {
+function removeRecallKeywordByIndex(item, index) {
   item.children?.splice(index, 1)
 }
-const searchKeywordCountMap = computed(() => {
+const recallKeywordCountMap = computed(() => {
   const target = props.modelValue?.find((it) => it.type === 'search' && it.enabled)
   if (!target || !target?.children?.length) {
     return {}
@@ -285,7 +285,7 @@ const getSearchSourceTipText = (element) => {
     } else if (element.children?.some((it) => it.enabled && !it.keyword?.trim())) {
       seg.push(`空项会被跳过`)
     }
-    if (Object.values(searchKeywordCountMap.value).some((n) => n > 1)) {
+    if (Object.values(recallKeywordCountMap.value).some((n) => n > 1)) {
       seg.push(`重复项仅取第一个启用的项`)
     }
   }

@@ -29,7 +29,7 @@ export function normalizeJobProfile (raw = {}) {
     degree: firstString(raw.degree, raw.degreeName, jobInfo.degreeName, raw.selectedJobData?.degreeName),
     labels: normalizeList(raw.labels ?? raw.jobLabels ?? jobInfo.jobLabels ?? jobInfo.skills),
     jd,
-    sourceKeyword: firstString(raw.sourceKeyword, raw.query, raw.pageQuery),
+    recallKeyword: firstString(raw.recallKeyword, raw.query, raw.pageQuery),
     bossName: firstString(raw.bossName, bossInfo.name, bossInfo.bossName),
     bossTitle: firstString(raw.bossTitle, bossInfo.title, bossInfo.position),
     raw,
@@ -46,7 +46,7 @@ export function jobText (job) {
     job.degree,
     job.labels?.join?.(' '),
     job.jd,
-    job.sourceKeyword,
+    job.recallKeyword,
   ].filter(Boolean).join('\n')
 }
 

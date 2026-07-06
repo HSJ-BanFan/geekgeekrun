@@ -7,14 +7,14 @@
 
 ## 1. Problem Statement
 
-当前求职端已经具备自动开聊、发送招呼语、上传图片、关键词搜索、LLM 配置等能力，但这些能力主要藏在桌面应用配置和自动化流程内部。用户希望把系统能力拆成可被 Agent 调用的 CLI 命令，让 Agent 负责观察职位、读取 JD、判断是否符合求职目标，再调用 CLI 执行受控动作。
+当前求职端已经具备自动开聊、发送招呼语、上传图片、Recall Keyword 搜索、LLM 配置等能力，但这些能力主要藏在桌面应用配置和自动化流程内部。用户希望把系统能力拆成可被 Agent 调用的 CLI 命令，让 Agent 负责观察职位、读取 JD、判断是否符合求职目标，再调用 CLI 执行受控动作。
 
 用户的核心痛点：
 
-1. 仅靠关键词容易出现同一类岗位重复投递、城市/职位分布不均。
+1. 仅靠 Recall Keyword 容易出现同一类岗位重复投递、城市/职位分布不均。
 2. 职位标题不足以判断岗位是否合适，需要读取 JD 后再判断。
 3. 不同岗位需要使用不同开场白，不能把 Python 后端文案发给日语翻译岗位。
-4. 数据标注、信息录入、内容审核、运营跟播、无技术栈 AI 岗等岗位需要明确排除。
+4. 数据标注、信息录入、内容审核、运营跟播、无 Attention Technology 要求的 AI 岗等岗位需要明确排除。
 5. 真实发送必须保守，避免误触发批量投递或重复发送。
 6. 用户希望后续将该项目作为个人维护 fork 持续二次开发，因此需要清楚的文档化计划。
 
@@ -28,7 +28,7 @@
 
 | 命令 | 作用 | 当前状态 |
 |------|------|----------|
-| `snapshot` | 读取当前求职端配置摘要：关键词、静态条件、开场白规则、简历图片、LLM 状态 | 已实现 |
+| `snapshot` | 读取当前求职端配置摘要：Recall Keyword、静态条件、开场白规则、简历图片、LLM 状态 | 已实现 |
 | `extract-job --from-browser` | 从浏览器当前选中职位提取职位详情和 JD | 已实现 |
 | `extract-job --job job.json` | 从文件或参数归一化职位结构 | 已实现 |
 | `evaluate-job` | 用规则判断职位是否投递 | 已实现 |
@@ -57,15 +57,15 @@
 2. 作为求职者，我希望系统能识别 Python 后端、Python 开发、数据工程、数据开发、ETL、爬虫、自动化、AI 应用、LLM 应用、Agent 开发、全栈开发等方向，以便优先投递目标岗位。
 3. 作为求职者，我希望系统能识别日语翻译、本地化、字幕等方向，以便覆盖非技术但符合偏好的岗位。
 4. 作为求职者，我希望系统偏好远程、线上、居家办公岗位，以便提高投递质量。
-5. 作为求职者，我希望系统排除 Java/J2EE/Spring/SpringBoot/MyBatis 岗位，以免混入不符合技术栈的职位。
-6. 作为求职者，我希望系统排除数据标注、信息录入、内容审核、运营跟播、客服、销售、主播、推广、无技术栈 AI 岗，以免浪费投递机会。
+5. 作为求职者，我希望系统识别 Java/J2EE/Spring/SpringBoot/MyBatis 等 Attention Technology，并要求 LLM 解释它们是否属于核心要求，以免混入不符合目标方向的职位。
+6. 作为求职者，我希望系统排除数据标注、信息录入、内容审核、运营跟播、客服、销售、主播、推广、无 Attention Technology 要求的 AI 岗，以免浪费投递机会。
 7. 作为求职者，我希望系统根据职位类型选择对应开场白，以免向日语岗位发送 Python 后端文案。
 8. 作为求职者，我希望系统能在开聊后尽快发送自定义文案和图片，而不是等整轮结束后再补发。
 9. 作为求职者，我希望真实发送必须显式确认，以免调试时误投递。
 10. 作为维护者，我希望 CLI 输出结构化 JSON，以便 Agent、脚本和测试稳定解析。
 11. 作为维护者，我希望 LLM 调用复用软件里已经配置好的模型服务，以便不用在源码里硬编码密钥。
 12. 作为维护者，我希望提交不包含本地配置、密钥、简历路径、cookie 或 localStorage，以便 fork 仓库可公开维护。
-13. 作为维护者，我希望 CLI 可以独立 dry-run 测试关键词匹配、JD 匹配、预设任务，以便每次改策略后快速回归。
+13. 作为维护者，我希望 CLI 可以独立 dry-run 测试 Recall Keyword 追踪、JD 匹配、预设任务，以便每次改策略后快速回归。
 14. 作为维护者，我希望后续有审计日志记录每个职位为什么投、为什么跳过，以便复盘投递偏好。
 15. 作为维护者，我希望后续 Agent 可以控制“下一个职位”和“立即沟通”，以便形成完整闭环。
 
@@ -82,9 +82,9 @@
 | 模块 | 职责 |
 |------|------|
 | `bin/ggr.mjs` | 命令入口，解析参数，输出 JSON |
-| `src/config.mjs` | 读取运行时配置、关键词、开场白规则、图片路径、浏览器状态、LLM 配置 |
+| `src/config.mjs` | 读取运行时配置、Recall Keyword、开场白规则、图片路径、浏览器状态、LLM 配置 |
 | `src/job-profile.mjs` | 把 BOSS 页面数据、Vue 数据、文件输入归一化为 `JobProfile` |
-| `src/policy.mjs` | 规则判断：硬排除、类别识别、关键词匹配、JD 匹配、远程信号、开场白选择、预设任务 |
+| `src/policy.mjs` | 规则判断：硬排除、类别识别、Recall Keyword 追踪、JD 匹配、远程信号、开场白选择、预设任务 |
 | `src/llm-evaluator.mjs` | 复用项目 OpenAI SDK 封装调用已配置模型，并解析 JSON 返回 |
 | `src/browser-actions.mjs` | 打开浏览器、注入登录态、提取当前职位、向最近聊天发送消息和图片 |
 
@@ -92,7 +92,7 @@
 
 已验证：
 
-1. `snapshot` 能读取 46 个关键词、3 个开场白规则、简历图片状态、LLM 配置状态。
+1. `snapshot` 能读取 46 个 Recall Keyword、3 个开场白规则、简历图片状态、LLM 配置状态。
 2. `run-once --from-browser` 能从真实 BOSS 当前职位提取 JD。
 3. Python/数据开发/ETL 正例能判断为 `apply` 并输出预设任务。
 4. 日语翻译远程正例能判断为 `apply` 并选择日语开场白。
@@ -115,10 +115,10 @@ Agent 不直接操作浏览器 DOM，也不直接读取运行时配置文件。A
 
 规则判断负责硬边界：
 
-- 明确技术栈排除。
+- 记录 Attention Technology 风险并要求 LLM 解释。
 - 明确岗位类型排除。
 - 配置正则约束。
-- 关键词和类别初筛。
+- Recall Keyword 追踪和类别初筛。
 - 开场白模板选择。
 
 LLM 负责 JD 语义复核，但不能覆盖硬拒绝边界。
@@ -157,7 +157,7 @@ CLI 输出必须是稳定 JSON，便于 Agent 消费。错误也应返回：
   "degree": "",
   "labels": [],
   "jd": "",
-  "sourceKeyword": "",
+  "recallKeyword": "",
   "bossName": "",
   "bossTitle": "",
   "raw": {}
@@ -187,8 +187,8 @@ CLI 输出必须是稳定 JSON，便于 Agent 消费。错误也应返回：
 
 输出重点：
 
-- `keywordCount`
-- `keywords`
+- `recallKeywordCount`
+- `recallKeywords`
 - `staticConditionCount`
 - `combineRecommendJobFilterType`
 - `rotateJobSourceAfterChatStartup`
@@ -206,7 +206,7 @@ CLI 输出必须是稳定 JSON，便于 Agent 消费。错误也应返回：
 - `--job job.json`
 - `--title`
 - `--jd`
-- `--keyword`
+- `--recall-keyword`
 
 输出：
 
@@ -222,7 +222,7 @@ CLI 输出必须是稳定 JSON，便于 Agent 消费。错误也应返回：
 - `decision`: `apply` | `skip` | `uncertain`
 - `score`
 - `category`
-- `keywordMatch`
+- `recallKeyword`
 - `configuredRegex`
 - `jdMatch`
 - `remoteFit`
@@ -313,13 +313,13 @@ CLI 输出必须是稳定 JSON，便于 Agent 消费。错误也应返回：
 - 运营助理
 - 数据标注
 - AI 训练师
-- 无技术栈 AI 内容测评
+- 无 Attention Technology 要求的 AI 内容测评
 
 ### 7.3 已修正的误判
 
 - “翻译”本身不能代表日语岗位，必须有日语相关信号。
 - “线上线下”不能代表远程岗位。
-- 多词关键词不能只命中“实习/远程/线上/兼职”等泛词，必须命中核心词。
+- 多词 Recall Keyword 不能只命中“实习/远程/线上/兼职”等泛词，必须命中核心词。
 
 ---
 
@@ -331,8 +331,8 @@ CLI 输出必须是稳定 JSON，便于 Agent 消费。错误也应返回：
 
 1. `pnpm --filter @geekgeekrun/job-agent-cli check`
 2. `node packages/job-agent-cli/bin/ggr.mjs snapshot`
-3. `node packages/job-agent-cli/bin/ggr.mjs evaluate-job --title ... --jd ... --keyword ...`
-4. `node packages/job-agent-cli/bin/ggr.mjs run-once --title ... --jd ... --keyword ...`
+3. `node packages/job-agent-cli/bin/ggr.mjs evaluate-job --title ... --jd ... --recall-keyword ...`
+4. `node packages/job-agent-cli/bin/ggr.mjs run-once --title ... --jd ... --recall-keyword ...`
 5. `node packages/job-agent-cli/bin/ggr.mjs evaluate-job --llm ...`
 6. `node packages/job-agent-cli/bin/ggr.mjs run-once --from-browser`
 
@@ -421,7 +421,7 @@ for each job in current list:
 - salary
 - experience
 - degree
-- sourceKeyword
+- recallKeyword
 - category
 - decision
 - score
@@ -505,4 +505,3 @@ for each job in current list:
 - 审计日志。
 - 完整 Agent loop。
 - UI 入口。
-

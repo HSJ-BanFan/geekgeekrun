@@ -1,12 +1,12 @@
-import { getDefaultGreeting, getEnabledSearchKeywords, getGreetingRules, getResumeImagePath } from './config.mjs'
+import { getDefaultGreeting, getEnabledRecallKeywords, getGreetingRules, getResumeImagePath } from './config.mjs'
 import { jobText } from './job-profile.mjs'
 
 const hardRejectPattern = /信息录入|录入员|纯兼职|运营跟播|跟播|内容审核|审核专员|AI内容|内容测评|文案撰写|销售|客服|主播|带货|推广|运营助理|数据标注|标注员|AI训练师|数据采集员|数据清洗员/i
-const techStackAttentionPattern = /(?<![A-Za-z])Java(?![A-Za-z])|J2EE|Spring\s*Boot|SpringBoot|(?<![A-Za-z])Spring(?![A-Za-z])|MyBatis/i
-const requiredTechStackContextPattern = /熟悉|精通|掌握|具备|要求|必须|开发|技术栈|后端|服务端|框架|经验|搭建|维护/i
-const optionalTechStackContextPattern = /加分|优先|了解|非必|不是必须|不要求|不需要|不涉及|无需|可选|bonus|plus|nice to have/i
-const backgroundTechStackContextPattern = /部门|团队|其他|已有|现有|历史|遗留|迁移|对接|服务|系统/i
-const genericKeywordTokens = new Set(['实习', '实习生', '远程', '线上', '居家办公', '兼职'])
+const attentionTechnologySeedPattern = /(?<![A-Za-z])Java(?![A-Za-z])|J2EE|Spring\s*Boot|SpringBoot|(?<![A-Za-z])Spring(?![A-Za-z])|MyBatis/i
+const requiredAttentionTechnologyContextPattern = /熟悉|精通|掌握|具备|要求|必须|开发|技术栈|后端|服务端|框架|经验|搭建|维护/i
+const optionalAttentionTechnologyContextPattern = /加分|优先|了解|非必|不是必须|不要求|不需要|不涉及|无需|可选|bonus|plus|nice to have/i
+const backgroundAttentionTechnologyContextPattern = /部门|团队|其他|已有|现有|历史|遗留|迁移|对接|服务|系统/i
+const genericRecallKeywordTokens = new Set(['实习', '实习生', '远程', '线上', '居家办公', '兼职'])
 const genericProfileTokens = new Set([
   '实习',
   '实习生',
@@ -77,10 +77,10 @@ export function selectGreeting (job, bossConfig) {
 export function evaluateJobWithRules (job, bossConfig, candidateProfile = null) {
   const text = jobContentText(job)
   const hardReject = findHardReject(job, text)
-  const techStackAssessment = assessTechStackAttention(job, text)
+  const attentionTechnologyAssessment = assessAttentionTechnology(job, text)
   const configuredRegexResult = testConfiguredRegex(job, bossConfig)
   const category = inferCategory(text)
-  const recallKeyword = matchConfiguredKeyword(job, bossConfig)
+  const recallKeyword = matchConfiguredRecallKeyword(job, bossConfig)
   const profileFit = matchCandidateProfile(job, candidateProfile)
   const jdMatches = matchJdRequirements(text, category)
   const remoteFit = hasRemoteSignal(text)
@@ -92,24 +92,23 @@ export function evaluateJobWithRules (job, bossConfig, candidateProfile = null) 
     configuredRegexMatched ||
     profileFit.expectedJobMatched ||
     profileFit.intentSignalMatches.length ||
-    profileFit.resumeSignalMatches.length ||
-    profileFit.keywordIntentMatches.length
+    profileFit.resumeSignalMatches.length
   )
 
   const reasons = []
   if (hardReject) reasons.push(`hard reject pattern matched: ${hardReject.match}`)
-  if (techStackAssessment.requiresLlm) {
-    reasons.push(`tech stack needs llm explanation: ${techStackAssessment.terms.join(', ')}`)
+  if (attentionTechnologyAssessment.requiresLlm) {
+    reasons.push(`attention technology needs llm explanation: ${attentionTechnologyAssessment.terms.join(', ')}`)
   }
   if (configuredRegexResult.configured) reasons.push(configuredRegexResult.reason)
-  if (requiresLlmFinalDecision) reasons.push('llm final decision required for resume, intent, keyword, and JD fit')
+  if (requiresLlmFinalDecision) reasons.push('llm final decision required for resume, intent, recall keyword, and JD fit')
   if (!hasTargetFit) reasons.push('no lexical candidate profile fit matched')
   if (profileFit.expectedJobMatched) reasons.push(`matched resume expected job: ${candidateProfile?.expectedJob ?? ''}`)
   if (profileFit.intentSignalMatches.length) {
     reasons.push(`matched candidate intent signals: ${profileFit.intentSignalMatches.slice(0, 5).join(', ')}`)
   }
-  if (profileFit.keywordIntentMatches.length) {
-    reasons.push(`matched keyword context: ${profileFit.keywordIntentMatches.slice(0, 3).join(', ')}`)
+  if (profileFit.recallKeywordMatches.length) {
+    reasons.push(`matched recall keyword trace: ${profileFit.recallKeywordMatches.slice(0, 3).join(', ')}`)
   }
   if (remoteFit) reasons.push('remote/online signal matched')
 
@@ -127,7 +126,7 @@ export function evaluateJobWithRules (job, bossConfig, candidateProfile = null) 
   let decision = 'uncertain'
   if (hardReject) {
     decision = 'skip'
-  } else if (requiresLlmFinalDecision || techStackAssessment.requiresLlm || !configuredRegexResult.valid) {
+  } else if (requiresLlmFinalDecision || attentionTechnologyAssessment.requiresLlm || !configuredRegexResult.valid) {
     decision = 'uncertain'
   } else if (!configuredRegexResult.pass || !hasTargetFit) {
     decision = 'skip'
@@ -146,16 +145,16 @@ export function evaluateJobWithRules (job, bossConfig, candidateProfile = null) 
     profileFit,
     jdMatch: jdMatches,
     remoteFit,
-    techStackAssessment,
+    attentionTechnologyAssessment,
     greetingTemplate: greeting.rule,
     greetingMessage: greeting.message,
     resumeImagePath: getResumeImagePath(bossConfig),
     reasons,
-    presetTasks: buildPresetTasks({ decision, greeting, bossConfig, techStackAssessment, requiresLlmFinalDecision }),
+    presetTasks: buildPresetTasks({ decision, greeting, bossConfig, attentionTechnologyAssessment, requiresLlmFinalDecision }),
   }
 }
 
-function buildPresetTasks ({ decision, greeting, bossConfig, techStackAssessment, requiresLlmFinalDecision }) {
+function buildPresetTasks ({ decision, greeting, bossConfig, attentionTechnologyAssessment, requiresLlmFinalDecision }) {
   if (decision === 'skip') {
     return [{ type: 'mark_not_suit', dryRun: true }]
   }
@@ -168,11 +167,11 @@ function buildPresetTasks ({ decision, greeting, bossConfig, techStackAssessment
         dryRun: true,
       })
     }
-    if (techStackAssessment?.requiresLlm) {
+    if (attentionTechnologyAssessment?.requiresLlm) {
       tasks.push({
         type: 'evaluate_job_llm',
-        reason: 'tech_stack_explanation_required',
-        terms: techStackAssessment.terms,
+        reason: 'attention_technology_explanation_required',
+        terms: attentionTechnologyAssessment.terms,
         dryRun: true,
       })
     }
@@ -200,9 +199,9 @@ function findHardReject (job, text) {
   return null
 }
 
-function assessTechStackAttention (job, text) {
+function assessAttentionTechnology (job, text) {
   const evidence = []
-  for (const term of findTechStackAttentionTerms(job.title ?? '')) {
+  for (const term of findAttentionTechnologyTerms(job.title ?? '')) {
     evidence.push({
       term,
       segment: job.title,
@@ -211,42 +210,42 @@ function assessTechStackAttention (job, text) {
   }
 
   for (const segment of splitRequirementSegments(text)) {
-    for (const term of findTechStackAttentionTerms(segment)) {
+    for (const term of findAttentionTechnologyTerms(segment)) {
       evidence.push({
         term,
         segment,
-        context: classifyTechStackMention(segment),
+        context: classifyAttentionTechnologyMention(segment),
       })
     }
   }
 
-  const dedupedEvidence = dedupeTechStackEvidence(evidence)
+  const dedupedEvidence = dedupeAttentionTechnologyEvidence(evidence)
   const terms = [...new Set(dedupedEvidence.map(item => item.term))]
   return {
     requiresLlm: terms.length > 0,
     terms,
-    preliminaryVerdict: getPreliminaryTechStackVerdict(dedupedEvidence),
+    preliminaryVerdict: getPreliminaryAttentionTechnologyVerdict(dedupedEvidence),
     evidence: dedupedEvidence,
     instruction: terms.length
-      ? 'LLM must explain whether these technology terms are core/required skills, optional/background mentions, and whether the core stack matches the candidate resume and intent.'
+      ? 'LLM must explain whether these Attention Technology terms are core/required skills, optional/background mentions, and whether they match the candidate resume and intent.'
       : '',
   }
 }
 
-function findTechStackAttentionTerms (text) {
-  const regex = new RegExp(techStackAttentionPattern.source, 'ig')
+function findAttentionTechnologyTerms (text) {
+  const regex = new RegExp(attentionTechnologySeedPattern.source, 'ig')
   return [...String(text ?? '').matchAll(regex)].map(match => match[0])
 }
 
-function classifyTechStackMention (segment) {
-  if (isOptionalOrBackgroundTechStackMention(segment)) return 'optional_or_background'
-  if (requiredTechStackContextPattern.test(segment) || hasMultipleTechStackAttentionSignals(segment)) {
+function classifyAttentionTechnologyMention (segment) {
+  if (isOptionalOrBackgroundAttentionTechnologyMention(segment)) return 'optional_or_background'
+  if (requiredAttentionTechnologyContextPattern.test(segment) || hasMultipleAttentionTechnologySignals(segment)) {
     return 'requirement_like'
   }
   return 'mentioned'
 }
 
-function dedupeTechStackEvidence (evidence) {
+function dedupeAttentionTechnologyEvidence (evidence) {
   const seen = new Set()
   const result = []
   for (const item of evidence) {
@@ -258,7 +257,7 @@ function dedupeTechStackEvidence (evidence) {
   return result
 }
 
-function getPreliminaryTechStackVerdict (evidence) {
+function getPreliminaryAttentionTechnologyVerdict (evidence) {
   if (!evidence.length) return 'none'
   if (evidence.some(item => item.context === 'title' || item.context === 'requirement_like')) {
     return 'possible_core_or_required'
@@ -276,16 +275,16 @@ function splitRequirementSegments (text) {
     .filter(Boolean)
 }
 
-function isOptionalOrBackgroundTechStackMention (segment) {
-  return optionalTechStackContextPattern.test(segment) ||
+function isOptionalOrBackgroundAttentionTechnologyMention (segment) {
+  return optionalAttentionTechnologyContextPattern.test(segment) ||
     (
-      backgroundTechStackContextPattern.test(segment) &&
-      !requiredTechStackContextPattern.test(segment.replace(techStackAttentionPattern, ''))
+      backgroundAttentionTechnologyContextPattern.test(segment) &&
+      !requiredAttentionTechnologyContextPattern.test(segment.replace(attentionTechnologySeedPattern, ''))
     )
 }
 
-function hasMultipleTechStackAttentionSignals (segment) {
-  const matches = segment.match(new RegExp(techStackAttentionPattern.source, 'ig')) ?? []
+function hasMultipleAttentionTechnologySignals (segment) {
+  const matches = segment.match(new RegExp(attentionTechnologySeedPattern.source, 'ig')) ?? []
   return matches.length >= 2
 }
 
@@ -296,7 +295,7 @@ function matchCandidateProfile (job, candidateProfile) {
     expectedJobMatches: [],
     intentSignalMatches: [],
     resumeSignalMatches: [],
-    keywordIntentMatches: [],
+    recallKeywordMatches: [],
     regexMatches: [],
   }
   if (!candidateProfile) return empty
@@ -308,7 +307,7 @@ function matchCandidateProfile (job, candidateProfile) {
   const expectedJobMatches = matchSignals(splitSignalText(candidateProfile.expectedJob), text, 12)
   const intentSignalMatches = matchSignals(candidateProfile.intentSignals ?? [], text, 20)
   const resumeSignalMatches = matchSignals(candidateProfile.resumeSignals ?? [], text, 20)
-  const keywordIntentMatches = matchCandidateKeywords(job, candidateProfile, text)
+  const recallKeywordMatches = matchCandidateRecallKeywords(job, candidateProfile, text)
 
   return {
     profileAvailable: true,
@@ -316,7 +315,7 @@ function matchCandidateProfile (job, candidateProfile) {
     expectedJobMatches,
     intentSignalMatches,
     resumeSignalMatches,
-    keywordIntentMatches,
+    recallKeywordMatches,
     regexMatches,
   }
 }
@@ -338,20 +337,20 @@ function matchCandidateRegexes ({ titleText, jdText, fullText }, candidateProfil
     })
 }
 
-function matchCandidateKeywords (job, candidateProfile, normalizedJobText) {
+function matchCandidateRecallKeywords (job, candidateProfile, normalizedJobText) {
   const result = []
-  const sourceKeyword = String(job.sourceKeyword ?? '').trim()
-  const keywords = candidateProfile.searchKeywords ?? []
-  if (sourceKeyword && keywords.includes(sourceKeyword)) {
-    result.push(sourceKeyword)
+  const recallKeyword = String(job.recallKeyword ?? '').trim()
+  const recallKeywords = candidateProfile.recallKeywords ?? []
+  if (recallKeyword && recallKeywords.includes(recallKeyword)) {
+    result.push(recallKeyword)
   }
-  for (const keyword of keywords) {
-    if (result.includes(keyword)) continue
-    const tokens = splitSignalText(keyword).filter(token => !genericKeywordTokens.has(token))
+  for (const recallKeyword of recallKeywords) {
+    if (result.includes(recallKeyword)) continue
+    const tokens = splitSignalText(recallKeyword).filter(token => !genericRecallKeywordTokens.has(token))
     if (!tokens.length) continue
     const matchedTokens = matchSignals(tokens, normalizedJobText, tokens.length)
     if (matchedTokens.length && matchedTokens.length === tokens.length) {
-      result.push(keyword)
+      result.push(recallKeyword)
     }
   }
   return result.slice(0, 20)
@@ -421,26 +420,26 @@ function matchJdRequirements (text, category) {
   return { matched, missing }
 }
 
-function matchConfiguredKeyword (job, bossConfig) {
+function matchConfiguredRecallKeyword (job, bossConfig) {
   const text = jobText(job).toLowerCase()
-  const keywords = getEnabledSearchKeywords(bossConfig)
-  if (job.sourceKeyword && keywords.includes(job.sourceKeyword)) {
-    return { keyword: job.sourceKeyword, tokenMatches: job.sourceKeyword.split(/\s+/).filter(Boolean).length }
+  const recallKeywords = getEnabledRecallKeywords(bossConfig)
+  if (job.recallKeyword && recallKeywords.includes(job.recallKeyword)) {
+    return { value: job.recallKeyword, tokenMatches: job.recallKeyword.split(/\s+/).filter(Boolean).length }
   }
   let best = null
   let bestScore = 0
-  for (const keyword of keywords) {
-    const tokens = keyword.toLowerCase().split(/\s+/).filter(Boolean)
-    const signalTokens = tokens.filter(token => !genericKeywordTokens.has(token))
+  for (const recallKeyword of recallKeywords) {
+    const tokens = recallKeyword.toLowerCase().split(/\s+/).filter(Boolean)
+    const signalTokens = tokens.filter(token => !genericRecallKeywordTokens.has(token))
     if (!signalTokens.length) continue
     if (!signalTokens.every(token => text.includes(token))) continue
     const score = tokens.filter(token => text.includes(token)).length
     if (score > bestScore) {
-      best = keyword
+      best = recallKeyword
       bestScore = score
     }
   }
-  return { keyword: best, tokenMatches: bestScore }
+  return { value: best, tokenMatches: bestScore }
 }
 
 function testConfiguredRegex (job, bossConfig) {

@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 
-test('buildCandidateProfile keeps search keywords out of intent signals', async () => {
+test('buildCandidateProfile keeps recall keywords out of intent signals', async () => {
   const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ggr-candidate-profile-'))
   const originalHome = process.env.HOME
   const originalUserProfile = process.env.USERPROFILE
@@ -38,7 +38,7 @@ test('buildCandidateProfile keeps search keywords out of intent signals', async 
       ],
     })
 
-    assert.deepEqual(candidateProfile.searchKeywords, ['Rust embedded kernel', '日语翻译'])
+    assert.deepEqual(candidateProfile.recallKeywords, ['Rust embedded kernel', '日语翻译'])
     assert.equal(candidateProfile.intentSignals.includes('Python'), true)
     assert.equal(candidateProfile.intentSignals.includes('FastAPI'), true)
     assert.equal(candidateProfile.intentSignals.includes('Rust'), false)

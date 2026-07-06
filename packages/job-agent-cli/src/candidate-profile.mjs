@@ -1,5 +1,5 @@
 import { readConfigFile } from '@geekgeekrun/geek-auto-start-chat-with-boss/runtime-file-utils.mjs'
-import { getEnabledSearchKeywords, getGreetingRules } from './config.mjs'
+import { getEnabledRecallKeywords, getGreetingRules } from './config.mjs'
 
 const genericIntentTokens = new Set([
   '实习',
@@ -31,7 +31,7 @@ const maxSignalCount = 120
 
 export function buildCandidateProfile (bossConfig = {}) {
   const resume = readPrimaryResume()
-  const searchKeywords = getEnabledSearchKeywords(bossConfig)
+  const recallKeywords = getEnabledRecallKeywords(bossConfig)
   const titleRegex = String(bossConfig.expectJobNameRegExpStr ?? bossConfig.expectJobRegExpStr ?? '').trim()
   const typeRegex = String(bossConfig.expectJobTypeRegExpStr ?? '').trim()
   const descRegex = String(bossConfig.expectJobDescRegExpStr ?? '').trim()
@@ -50,7 +50,7 @@ export function buildCandidateProfile (bossConfig = {}) {
     resumeAvailable: Boolean(resume),
     expectedJob: String(resume?.content?.expectJob ?? '').trim(),
     workYearDesc: String(resume?.content?.workYearDesc ?? '').trim(),
-    searchKeywords,
+    recallKeywords,
     titleRegex,
     typeRegex,
     descRegex,
@@ -58,7 +58,7 @@ export function buildCandidateProfile (bossConfig = {}) {
     intentSignals: extractIntentSignals(intentText),
     resumeSignals: extractResumeSignals(resumeMarkdown),
     resumeMarkdown,
-    requiresLlmForFinalDecision: Boolean(resume || searchKeywords.length || titleRegex || typeRegex || descRegex),
+    requiresLlmForFinalDecision: Boolean(resume || recallKeywords.length || titleRegex || typeRegex || descRegex),
   }
 }
 
@@ -67,8 +67,8 @@ export function summarizeCandidateProfile (candidateProfile) {
     resumeAvailable: Boolean(candidateProfile?.resumeAvailable),
     expectedJob: candidateProfile?.expectedJob ?? '',
     workYearDesc: candidateProfile?.workYearDesc ?? '',
-    searchKeywordCount: candidateProfile?.searchKeywords?.length ?? 0,
-    searchKeywords: candidateProfile?.searchKeywords ?? [],
+    recallKeywordCount: candidateProfile?.recallKeywords?.length ?? 0,
+    recallKeywords: candidateProfile?.recallKeywords ?? [],
     titleRegex: candidateProfile?.titleRegex ?? '',
     typeRegex: candidateProfile?.typeRegex ?? '',
     descRegex: candidateProfile?.descRegex ?? '',

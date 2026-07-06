@@ -25,7 +25,7 @@ A technology mention that requires explicit LLM explanation because it may indic
 _Avoid_: rejected tech stack, hard reject keyword, blacklist technology
 
 **Attention Technology Seed List**:
-A small configured list of technology terms that forces an LLM explanation when encountered. The seed list is not exhaustive and is not the source of the stack-matching judgment.
+A small configured list of technology terms that forces an LLM explanation when encountered. The seed list is not exhaustive and is not the source of the Attention Technology judgment.
 _Avoid_: complete tech blacklist, rejected stack list
 
 **Target Role Intent**:
@@ -37,7 +37,7 @@ The candidate facts used to judge whether a job fit is credible, including resum
 _Avoid_: resume text dump, keyword profile, configured filter
 
 **Decision Evidence**:
-The non-secret information needed to explain why the agent skipped, deferred, or applied to a job. Decision Evidence includes job summaries, rule findings, LLM fit explanations, technology-stack explanations, risk flags, and action outcomes.
+The non-secret information needed to explain why the agent skipped, deferred, or applied to a job. Decision Evidence includes job summaries, rule findings, LLM fit explanations, Attention Technology explanations, risk flags, and action outcomes.
 _Avoid_: raw private data, opaque score
 
 **Audit Record**:
