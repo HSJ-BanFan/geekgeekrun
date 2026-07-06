@@ -113,6 +113,20 @@ Enforced by eslint + prettier in `packages/ui`:
 - Vue 3 `<script setup>` SFC style
 - `.mjs` files (automation core) are plain ESM, no TypeScript, no build step
 
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues, and external PRs are also treated as a triage surface. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Triage uses the default five-label vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This repo uses a single-context domain-doc layout. See `docs/agents/domain.md`.
+
 ## Plan Documents
 
 `plan/` contains architecture decision documents intended for AI-assisted development:
