@@ -80,7 +80,7 @@ export function evaluateJobWithRules (job, bossConfig, candidateProfile = null) 
   const techStackAssessment = assessTechStackAttention(job, text)
   const configuredRegexResult = testConfiguredRegex(job, bossConfig)
   const category = inferCategory(text)
-  const keywordMatch = matchConfiguredKeyword(job, bossConfig)
+  const recallKeyword = matchConfiguredKeyword(job, bossConfig)
   const profileFit = matchCandidateProfile(job, candidateProfile)
   const jdMatches = matchJdRequirements(text, category)
   const remoteFit = hasRemoteSignal(text)
@@ -89,7 +89,6 @@ export function evaluateJobWithRules (job, bossConfig, candidateProfile = null) 
   const configuredRegexMatched = Boolean(configuredRegexResult.configured && configuredRegexResult.pass)
   const hasTargetFit = Boolean(
     category ||
-    keywordMatch.keyword ||
     configuredRegexMatched ||
     profileFit.expectedJobMatched ||
     profileFit.intentSignalMatches.length ||
@@ -104,8 +103,7 @@ export function evaluateJobWithRules (job, bossConfig, candidateProfile = null) 
   }
   if (configuredRegexResult.configured) reasons.push(configuredRegexResult.reason)
   if (requiresLlmFinalDecision) reasons.push('llm final decision required for resume, intent, keyword, and JD fit')
-  if (!hasTargetFit) reasons.push('no lexical candidate profile or keyword fit matched')
-  if (keywordMatch.keyword) reasons.push(`matched configured keyword context: ${keywordMatch.keyword}`)
+  if (!hasTargetFit) reasons.push('no lexical candidate profile fit matched')
   if (profileFit.expectedJobMatched) reasons.push(`matched resume expected job: ${candidateProfile?.expectedJob ?? ''}`)
   if (profileFit.intentSignalMatches.length) {
     reasons.push(`matched candidate intent signals: ${profileFit.intentSignalMatches.slice(0, 5).join(', ')}`)
@@ -121,7 +119,6 @@ export function evaluateJobWithRules (job, bossConfig, candidateProfile = null) 
   if (profileFit.intentSignalMatches.length) score += Math.min(20, profileFit.intentSignalMatches.length * 5)
   if (profileFit.resumeSignalMatches.length) score += Math.min(15, profileFit.resumeSignalMatches.length * 3)
   if (configuredRegexMatched) score += 15
-  if (keywordMatch.keyword) score += 15
   if (jdMatches.matched.length) score += 10
   if (remoteFit) score += 5
   if (job.salary) score += 5
@@ -144,7 +141,7 @@ export function evaluateJobWithRules (job, bossConfig, candidateProfile = null) 
     hardReject,
     requiresLlmFinalDecision,
     category: category?.category ?? 'unknown',
-    keywordMatch,
+    recallKeyword,
     configuredRegex: configuredRegexResult,
     profileFit,
     jdMatch: jdMatches,
