@@ -3,7 +3,7 @@ import puppeteerExtra from 'puppeteer-extra'
 import StealthPlugin from 'puppeteer-extra-plugin-stealth'
 import LaodengPlugin from '@geekgeekrun/puppeteer-extra-plugin-laodeng'
 import AnonymizeUaPlugin from 'puppeteer-extra-plugin-anonymize-ua'
-import { getBrowserPath, readBrowserState } from './config.mjs'
+import { getBrowserPath, getJobAgentBrowserProfileDir, readBrowserState } from './config.mjs'
 import { normalizeJobProfile } from './job-profile.mjs'
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -39,6 +39,7 @@ const jobRelocationDetailUnconfirmedReason = 'JOB_RELOCATION_DETAIL_UNCONFIRMED'
 const jobRelocationFailureSendGreetingReason = 'start chat skipped due to job relocation failure'
 const jobRelocationFailureNextJobReason = 'next job skipped due to job relocation failure'
 const maxJobRelocationScrolls = 5
+const usePersistentProfile = process.env.GGR_JOB_AGENT_EPHEMERAL_BROWSER !== '1'
 
 export async function extractCurrentJobFromBrowser ({ headless = false, query = '', city = '' } = {}) {
   const { browser, page } = await openBrowser({ headless })
@@ -411,7 +412,7 @@ export async function sendGreetingToMostRecentChat ({ message, messageSkipReason
   }
 }
 
-async function openJobsPage (page, { query = '', city = '' } = {}) {
+export async function openJobsPage (page, { query = '', city = '' } = {}) {
   await page.goto(buildJobsPageUrl({ query, city }), { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {})
   await page.waitForFunction(() => document.readyState === 'complete', { timeout: 60000 }).catch(() => {})
   await sleep(5000)
@@ -424,7 +425,7 @@ function buildJobsPageUrl ({ query = '', city = '' } = {}) {
   return url.toString()
 }
 
-async function extractCurrentJobOnPage (page) {
+export async function extractCurrentJobOnPage (page) {
   const raw = await page.evaluate(() => {
     const jobsMain = document.querySelector('.page-jobs-main')
     const detailBox = document.querySelector('.job-detail-box')
@@ -473,6 +474,16 @@ async function startChatOnCurrentPage (page, { confirm, expectedJob, currentProf
       currentJob: currentProfile,
     }
   }
+  if (buttonState.authRequired || buttonState.securityCheckRequired) {
+    return {
+      dryRun: false,
+      clicked: false,
+      success: false,
+      reason: buttonState.authRequired ? 'BOSS_WEB_AUTH_REQUIRED' : 'BOSS_WEB_SECURITY_CHECK_REQUIRED',
+      buttonState,
+      currentJob: currentProfile,
+    }
+  }
   if (!buttonState.canStart) {
     return {
       dryRun: false,
@@ -491,6 +502,9 @@ async function inspectStartChatButton (page) {
     const button = document.querySelector(selector)
     const text = button?.textContent?.trim?.() ?? ''
     const rect = button?.getBoundingClientRect?.()
+    const bodyText = document.body?.innerText ?? ''
+    const authRequired = /登录\/注册|登录查看完整内容|请登录|扫码登录|验证码登录/.test(bodyText)
+    const securityCheckRequired = /安全验证|环境异常|验证后继续|拖动滑块/.test(bodyText)
     const disabled = !button ||
       button.classList?.contains?.('disabled') ||
       button.hasAttribute?.('disabled') ||
@@ -499,6 +513,8 @@ async function inspectStartChatButton (page) {
       found: Boolean(button),
       text,
       disabled,
+      authRequired,
+      securityCheckRequired,
       canStart: Boolean(button) && text === '立即沟通' && !disabled,
       rect: rect
         ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
@@ -513,7 +529,7 @@ async function clickStartChatButton (page, currentProfile) {
     return { dryRun: false, clicked: false, success: false, reason: 'START_CHAT_BUTTON_NOT_FOUND' }
   }
   const responsePromise = waitForAddFriendJson(page, currentProfile?.jobId)
-  await button.click()
+  const trigger = await triggerStartChat(page, button)
   const responseResult = await responsePromise
   if (responseResult.error) {
     await sleep(2000)
@@ -524,6 +540,7 @@ async function clickStartChatButton (page, currentProfile) {
         clicked: true,
         success: true,
         reason: 'PAGE_JUMPED_TO_CHAT',
+        triggerMethod: trigger.method,
         currentUrl: page.url(),
       }
     }
@@ -532,11 +549,48 @@ async function clickStartChatButton (page, currentProfile) {
       clicked: true,
       success: false,
       reason: 'ADD_FRIEND_RESPONSE_TIMEOUT',
+      triggerMethod: trigger.method,
       error: responseResult.error,
       currentUrl: page.url(),
     }
   }
-  return await handleAddFriendResponse(page, responseResult.payload, currentProfile?.jobId)
+  return await handleAddFriendResponse(page, responseResult.payload, currentProfile?.jobId, 0, trigger.method)
+}
+
+async function triggerStartChat (page, element) {
+  const vueResult = await page.evaluate(() => {
+    const vm = document.querySelector('.job-detail-box')?.__vue__
+    if (typeof vm?.startChatAction !== 'function') return { called: false }
+    vm.startChatAction()
+    return { called: true }
+  }).catch(err => ({ called: false, error: err?.message ?? String(err) }))
+  if (vueResult?.called) return { method: 'vue_startChatAction' }
+
+  await clickElementLikeUser(page, element)
+  return { method: 'mouse' }
+}
+
+async function clickElementLikeUser (page, element) {
+  if (element.evaluate) {
+    await element.evaluate(node => {
+      node.scrollIntoView?.({ block: 'center', inline: 'center' })
+    }).catch(() => null)
+  }
+  await sleep(300 + Math.random() * 700)
+
+  const box = await element.boundingBox?.().catch(() => null)
+  if (!box || !page.mouse) {
+    await element.click()
+    return
+  }
+
+  const x = box.x + box.width * (0.35 + Math.random() * 0.3)
+  const y = box.y + box.height * (0.35 + Math.random() * 0.3)
+  await page.mouse.move(x, y, { steps: 12 + Math.floor(Math.random() * 8) })
+  await sleep(120 + Math.random() * 280)
+  await page.mouse.down()
+  await sleep(80 + Math.random() * 160)
+  await page.mouse.up()
 }
 
 async function waitForAddFriendJson (page, jobId) {
@@ -556,13 +610,14 @@ async function waitForAddFriendJson (page, jobId) {
   }
 }
 
-async function handleAddFriendResponse (page, payload, jobId, depth = 0) {
+async function handleAddFriendResponse (page, payload, jobId, depth = 0, triggerMethod = '') {
   if (payload?.code === 0) {
     await waitForGreetingSurface(page).catch(() => null)
     return {
       dryRun: false,
       clicked: true,
       success: true,
+      triggerMethod,
       response: summarizeAddFriendResponse(payload),
       currentUrl: page.url(),
     }
@@ -582,6 +637,7 @@ async function handleAddFriendResponse (page, payload, jobId, depth = 0) {
         clicked: true,
         success: false,
         reason: 'CONTINUE_DIALOG_BUTTON_NOT_FOUND',
+        triggerMethod,
         response: summarizeAddFriendResponse(payload),
       }
     }
@@ -592,10 +648,11 @@ async function handleAddFriendResponse (page, payload, jobId, depth = 0) {
         clicked: true,
         success: false,
         reason: 'ADD_FRIEND_RESPONSE_TIMEOUT_AFTER_CONTINUE',
+        triggerMethod,
         error: nextResponse.error,
       }
     }
-    return await handleAddFriendResponse(page, nextResponse.payload, jobId, depth + 1)
+    return await handleAddFriendResponse(page, nextResponse.payload, jobId, depth + 1, triggerMethod)
   }
 
   if (/今日沟通人数已达上限|明天再来/.test(content)) {
@@ -604,6 +661,7 @@ async function handleAddFriendResponse (page, payload, jobId, depth = 0) {
       clicked: true,
       success: false,
       reason: 'DAILY_LIMIT_REACHED',
+      triggerMethod,
       response: summarizeAddFriendResponse(payload),
     }
   }
@@ -613,6 +671,7 @@ async function handleAddFriendResponse (page, payload, jobId, depth = 0) {
     clicked: true,
     success: false,
     reason: 'START_CHAT_REJECTED',
+    triggerMethod,
     response: summarizeAddFriendResponse(payload),
   }
 }
@@ -971,22 +1030,18 @@ function compareBossForChatGuard (expected, actual) {
   }
 }
 
-async function openBrowser ({ headless = false } = {}) {
+export async function openBrowser ({ headless = false } = {}) {
   const browserPath = getBrowserPath()
   if (!browserPath || !fs.existsSync(browserPath)) {
     throw new Error(`NO_BROWSER:${browserPath}`)
   }
   registerPlugins()
-  const browser = await puppeteerExtra.launch({
-    executablePath: browserPath,
-    headless,
-    ignoreHTTPSErrors: true,
-    protocolTimeout: 120000,
-    defaultViewport: { width: 1440, height: 760 },
-    args: ['--no-first-run', '--no-default-browser-check'],
-  })
+  const browser = await puppeteerExtra.launch(buildBrowserLaunchOptions({ browserPath, headless }))
   const page = (await browser.pages())[0] ?? await browser.newPage()
-  const { cookies, localStorage } = readBrowserState()
+  await configureBossPage(page)
+  const { cookies, localStorage } = usePersistentProfile
+    ? { cookies: [], localStorage: {} }
+    : readBrowserState()
   if (Array.isArray(cookies) && cookies.length) {
     await page.setCookie(...cookies.map(cookie => {
       const copy = { ...cookie }
@@ -1001,6 +1056,29 @@ async function openBrowser ({ headless = false } = {}) {
     }
   }, localStorage).catch(() => {})
   return { browser, page }
+}
+
+export function buildBrowserLaunchOptions ({ browserPath, headless = false } = {}) {
+  const launchOptions = {
+    executablePath: browserPath,
+    headless,
+    ignoreHTTPSErrors: true,
+    protocolTimeout: 300000,
+    defaultViewport: { width: 1440, height: 760 },
+    args: ['--no-first-run', '--no-default-browser-check', '--lang=zh-CN,zh', '--disable-blink-features=AutomationControlled'],
+  }
+  if (usePersistentProfile) {
+    launchOptions.userDataDir = getJobAgentBrowserProfileDir()
+  }
+  return launchOptions
+}
+
+async function configureBossPage (page) {
+  await page.setExtraHTTPHeaders?.({ 'Accept-Language': 'zh-CN,zh;q=0.9' }).catch(() => null)
+  await page.evaluateOnNewDocument?.(() => {
+    Object.defineProperty(navigator, 'language', { get: () => 'zh-CN' })
+    Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] })
+  }).catch(() => null)
 }
 
 function registerPlugins () {

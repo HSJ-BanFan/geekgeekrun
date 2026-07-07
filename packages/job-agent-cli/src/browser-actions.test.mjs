@@ -5,10 +5,26 @@ import path from 'node:path'
 import { test } from 'node:test'
 
 import {
+  buildBrowserLaunchOptions,
   evaluateChatTargetJobMatchGuard,
   runCurrentJobBrowserActionsOnOpenPage,
   sendGreetingToCurrentSurfaceOrRecentChat,
 } from './browser-actions.mjs'
+
+test('buildBrowserLaunchOptions uses stable browser identity for BOSS actions', () => {
+  const options = buildBrowserLaunchOptions({
+    browserPath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    headless: false,
+  })
+
+  assert.equal(options.headless, false)
+  assert.equal(options.defaultViewport.width, 1440)
+  assert.equal(options.defaultViewport.height, 760)
+  assert.ok(options.userDataDir)
+  assert.ok(options.userDataDir.endsWith(path.join('.geekgeekrun', 'storage', 'job-agent-chrome-profile')))
+  assert.ok(options.args.includes('--disable-blink-features=AutomationControlled'))
+  assert.ok(options.args.includes('--lang=zh-CN,zh'))
+})
 
 test('evaluateChatTargetJobMatchGuard accepts a matching chat target job and boss', () => {
   const guard = evaluateChatTargetJobMatchGuard({
@@ -299,6 +315,140 @@ test('runCurrentJobBrowserActions confirmed apply sends safe text after job iden
   assert.deepEqual(sentMessages, ['您好，我想沟通这个岗位。'])
 })
 
+test('runCurrentJobBrowserActions confirmed apply clicks start chat with user-like mouse input when available', async () => {
+  const mouseEvents = []
+  let directClickCount = 0
+  const page = createJobsPageFake({
+    currentProfile: {
+      jobId: 'authorized-job',
+      title: '后端开发',
+      company: '示例科技',
+    },
+    jobList: [
+      { jobId: 'authorized-job', title: '后端开发', company: '示例科技' },
+    ],
+    startChatButtonState: {
+      found: true,
+      text: '立即沟通',
+      disabled: false,
+      canStart: true,
+    },
+    startChatButtonBox: { x: 20, y: 30, width: 100, height: 40 },
+    mouseEvents,
+    onStartChatClick: () => {
+      directClickCount += 1
+    },
+    chatInputAvailable: true,
+  })
+
+  const result = await runCurrentJobBrowserActionsOnOpenPage(page, {
+    shouldApply: true,
+    confirm: true,
+    expectedJob: {
+      jobId: 'authorized-job',
+      title: '后端开发',
+      company: '示例科技',
+    },
+    message: '您好，我想沟通这个岗位。',
+    moveNext: false,
+  })
+
+  const startChatAction = result.actions.find(action => action.type === 'start_chat')
+  assert.equal(startChatAction.result.success, true)
+  assert.equal(directClickCount, 0)
+  assert.deepEqual(mouseEvents.map(event => event.type), ['move', 'down', 'up'])
+})
+
+test('runCurrentJobBrowserActions confirmed apply prefers BOSS page startChatAction when available', async () => {
+  let vueStartChatCount = 0
+  let directClickCount = 0
+  const page = createJobsPageFake({
+    currentProfile: {
+      jobId: 'authorized-job',
+      title: '后端开发',
+      company: '示例科技',
+    },
+    jobList: [
+      { jobId: 'authorized-job', title: '后端开发', company: '示例科技' },
+    ],
+    startChatButtonState: {
+      found: true,
+      text: '立即沟通',
+      disabled: false,
+      canStart: true,
+    },
+    hasVueStartChatAction: true,
+    onVueStartChatAction: () => {
+      vueStartChatCount += 1
+    },
+    onStartChatClick: () => {
+      directClickCount += 1
+    },
+    chatInputAvailable: true,
+  })
+
+  const result = await runCurrentJobBrowserActionsOnOpenPage(page, {
+    shouldApply: true,
+    confirm: true,
+    expectedJob: {
+      jobId: 'authorized-job',
+      title: '后端开发',
+      company: '示例科技',
+    },
+    message: '您好，我想沟通这个岗位。',
+    moveNext: false,
+  })
+
+  const startChatAction = result.actions.find(action => action.type === 'start_chat')
+  assert.equal(startChatAction.result.success, true)
+  assert.equal(startChatAction.result.triggerMethod, 'vue_startChatAction')
+  assert.equal(vueStartChatCount, 1)
+  assert.equal(directClickCount, 0)
+})
+
+test('runCurrentJobBrowserActions confirmed apply stops before clicking when BOSS web auth is required', async () => {
+  let clicked = false
+  const page = createJobsPageFake({
+    currentProfile: {
+      jobId: 'authorized-job',
+      title: '后端开发',
+      company: '示例科技',
+    },
+    jobList: [
+      { jobId: 'authorized-job', title: '后端开发', company: '示例科技' },
+    ],
+    startChatButtonState: {
+      found: true,
+      text: '立即沟通',
+      disabled: false,
+      canStart: true,
+      authRequired: true,
+    },
+    onStartChatClick: () => {
+      clicked = true
+    },
+  })
+
+  const result = await runCurrentJobBrowserActionsOnOpenPage(page, {
+    shouldApply: true,
+    confirm: true,
+    expectedJob: {
+      jobId: 'authorized-job',
+      title: '后端开发',
+      company: '示例科技',
+    },
+    message: '您好，我想沟通这个岗位。',
+    moveNext: false,
+  })
+
+  const startChatAction = result.actions.find(action => action.type === 'start_chat')
+  const sendGreetingAction = result.actions.find(action => action.type === 'send_greeting')
+  assert.equal(clicked, false)
+  assert.equal(startChatAction.result.clicked, false)
+  assert.equal(startChatAction.result.reason, 'BOSS_WEB_AUTH_REQUIRED')
+  assert.equal(sendGreetingAction.result.reason, 'start chat did not succeed')
+})
+
 test('runCurrentJobBrowserActions confirmed apply skips unsafe text while preserving image upload', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ggr-browser-action-image-'))
   const imagePath = path.join(tempDir, 'resume.png')
@@ -489,14 +639,22 @@ function createJobsPageFake ({
   onImageUpload = () => {},
   onStartChatClick = () => {},
   onSendClick = () => {},
+  startChatButtonBox = null,
+  mouseEvents = null,
+  hasVueStartChatAction = false,
+  onVueStartChatAction = () => {},
 } = {}) {
   let selectedProfile = currentProfile
-  return {
+  const page = {
     url () {
       return 'https://www.zhipin.com/web/geek/jobs'
     },
     async evaluate (fn, arg) {
       const source = String(fn)
+      if (source.includes('startChatAction')) {
+        if (hasVueStartChatAction) onVueStartChatAction()
+        return { called: hasVueStartChatAction }
+      }
       if (arg === '.job-detail-box .op-btn.op-btn-chat') {
         return {
           ...startChatButtonState,
@@ -538,6 +696,10 @@ function createJobsPageFake ({
       if (selector === '.job-detail-box .op-btn.op-btn-chat') {
         if (!startChatButtonState.found) return null
         return {
+          async evaluate () {},
+          async boundingBox () {
+            return startChatButtonBox
+          },
           async click () {
             onStartChatClick()
           },
@@ -594,4 +756,18 @@ function createJobsPageFake ({
       return {}
     },
   }
+  if (mouseEvents) {
+    page.mouse = {
+      async move (x, y, options) {
+        mouseEvents.push({ type: 'move', x, y, options })
+      },
+      async down () {
+        mouseEvents.push({ type: 'down' })
+      },
+      async up () {
+        mouseEvents.push({ type: 'up' })
+      },
+    }
+  }
+  return page
 }

@@ -43,6 +43,12 @@ export function getBrowserPath () {
   return fs.readFileSync(recordPath, 'utf8').trim().split(/\r?\n/)[0] ?? ''
 }
 
+export function getJobAgentBrowserProfileDir () {
+  const profileDir = path.join(storageFilePath, 'job-agent-chrome-profile')
+  fs.mkdirSync(profileDir, { recursive: true })
+  return profileDir
+}
+
 export function getAuditLogPath () {
   return path.join(storageFilePath, 'job-agent-audit.jsonl')
 }
