@@ -63,6 +63,35 @@ test('buildOrRefreshCapabilityProfile writes a fresh non-sensitive cache', async
   })
 })
 
+test('buildOrRefreshCapabilityProfile accepts a single string framing boundary from LLM output', async () => {
+  await withTempRuntime(async ({ storageDir, resume, bossConfig }) => {
+    const { buildCandidateProfile } = await import(`./candidate-profile.mjs?test=${Date.now()}-string-boundary`)
+    const {
+      buildOrRefreshCapabilityProfile,
+      inspectCapabilityProfileCache,
+    } = await import(`./capability-profile.mjs?test=${Date.now()}-string-boundary`)
+
+    const candidateProfile = buildCandidateProfile(bossConfig, { resume })
+    const result = await buildOrRefreshCapabilityProfile({
+      bossConfig,
+      candidateProfile,
+      llmConfig: enabledFakeLlmConfig(),
+      storageDir,
+      generateProfile: async () => ({
+        ...safeGeneratedProfile(),
+        framingBoundaries: 'Do not claim senior tenure, certifications, guaranteed availability, salary, or external employer history.',
+      }),
+    })
+
+    assert.equal(result.ok, true)
+    assert.equal(result.status.summary.framingBoundaries.length, 1)
+    assert.equal(
+      inspectCapabilityProfileCache({ bossConfig, candidateProfile, storageDir }).summary.framingBoundaries[0],
+      'Do not claim senior tenure, certifications, guaranteed availability, salary, or external employer history.'
+    )
+  })
+})
+
 test('inspectCapabilityProfileCache marks cache stale when inputs or versions change', async () => {
   await withTempRuntime(async ({ storageDir, resume, bossConfig }) => {
     const { buildCandidateProfile } = await import(`./candidate-profile.mjs?test=${Date.now()}-stale`)

@@ -233,6 +233,20 @@ test('Greeting Guard blocks unsafe personalized greeting claims', async () => {
   })
 })
 
+test('Greeting Guard allows personalized greetings up to 200 Chinese characters', () => {
+  const withinLimitGreeting = `您好，${'我关注岗位需求和项目匹配，'.repeat(13)}`
+  const overLimitGreeting = `您好，${'我关注岗位需求和项目匹配，'.repeat(16)}`
+
+  const withinLimitResult = guardPersonalizedGreeting(withinLimitGreeting)
+  const overLimitResult = guardPersonalizedGreeting(overLimitGreeting)
+
+  assert.equal(withinLimitResult.characterCount, 172)
+  assert.equal(withinLimitResult.passed, true)
+  assert.equal(overLimitResult.characterCount, 211)
+  assert.equal(overLimitResult.passed, false)
+  assert.equal(overLimitResult.reasons.some(reason => reason.code === 'too_long'), true)
+})
+
 test('buildGuardedPersonalizedGreetingPlan falls back when Greeting Guard rejects generated output', async () => {
   await withTempRuntime(async ({ storageDir, bossConfig, resume }) => {
     const candidateProfile = buildCandidateProfile(bossConfig, { resume })

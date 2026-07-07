@@ -1,4 +1,3 @@
-import 'reflect-metadata'
 import { parentPort } from 'node:worker_threads'
 import { initDb } from '@geekgeekrun/sqlite-plugin'
 import { type DataSource } from 'typeorm'

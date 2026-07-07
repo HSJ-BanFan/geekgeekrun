@@ -5,8 +5,10 @@
 </template>
 
 <script lang="ts" setup>
-import { hasOwn } from '@vue/shared'
 import { PropType, computed } from 'vue'
+
+const hasOwn = (value: unknown, key: PropertyKey): boolean =>
+  value != null && Object.prototype.hasOwnProperty.call(Object(value), key)
 
 const statusTextMap = {
   _: '请稍后，正在进行一些处理',

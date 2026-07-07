@@ -457,6 +457,10 @@ function normalizeAbilityList (items, limit) {
 }
 
 function normalizeStringList (items, limit) {
+  if (typeof items === 'string') {
+    const value = clipText(items, summaryTextLimit)
+    return value ? [value] : []
+  }
   if (!Array.isArray(items)) return []
   const output = []
   for (const item of items) {

@@ -24,8 +24,6 @@ import {
 import { PageReq } from '../../../../common/types/pagination'
 import { pipeWriteRegardlessError } from '../../utils/pipe'
 import { WriteStream } from 'node:fs'
-// eslint-disable-next-line vue/prefer-import-from-vue
-import { hasOwn } from '@vue/shared'
 import { createLlmConfigWindow, llmConfigWindow } from '../../../window/llmConfigWindow'
 import { createResumeEditorWindow, resumeEditorWindow } from '../../../window/resumeEditorWindow'
 import {
@@ -60,6 +58,9 @@ import {
 import { getLastUsedAndAvailableBrowser } from '../../DOWNLOAD_DEPENDENCIES/utils/browser-history'
 import { waitForCommonJobConditionDone } from '../../../features/common-job-condition'
 import { ensureConfigFileExist } from '@geekgeekrun/geek-auto-start-chat-with-boss/runtime-file-utils.mjs'
+
+const hasOwn = (value: unknown, key: PropertyKey): boolean =>
+  value != null && Object.prototype.hasOwnProperty.call(Object(value), key)
 
 export default function initIpc() {
   ipcMain.handle('save-config-file-from-ui', async (ev, payload) => {

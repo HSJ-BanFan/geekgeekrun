@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import fs from 'node:fs'
+import path from 'node:path'
 import process from 'node:process'
 import util from 'node:util'
 import minimist from 'minimist'
+import cityGroupData from '@geekgeekrun/geek-auto-start-chat-with-boss/cityGroup.mjs'
 import { loadRuntimeConfig, getEnabledRecallKeywords, getGreetingRules, getResumeImagePath } from '../src/config.mjs'
 import { normalizeJobProfile } from '../src/job-profile.mjs'
 import { evaluateJobWithRules, selectGreetingWithPlan } from '../src/policy.mjs'
@@ -17,12 +19,18 @@ import {
 } from '../src/greeting-plan.mjs'
 import {
   extractCurrentJobFromBrowser,
+  extractCurrentJobOnPage,
   moveToNextJob,
+  openBrowser,
+  openJobsPage,
   runCurrentJobBrowserActions,
+  runCurrentJobBrowserActionsOnOpenPage,
   sendGreetingToMostRecentChat,
   startChatOnCurrentJob,
 } from '../src/browser-actions.mjs'
 import { appendAuditLog, buildAuditRecord, createRunId } from '../src/audit-log.mjs'
+
+let flatCityListCache = null
 
 const argv = minimist(process.argv.slice(2), {
   boolean: ['from-browser', 'headless', 'llm', 'confirm', 'refresh'],
@@ -30,6 +38,10 @@ const argv = minimist(process.argv.slice(2), {
     'job',
     'title',
     'jd',
+    'target-count',
+    'max-candidates',
+    'candidate-timeout-ms',
+    'progress-file',
     'recall-keyword',
     'city',
     'salary',
@@ -76,6 +88,8 @@ async function dispatch (command, argv) {
       return auditLog(argv)
     case 'run-once':
       return runOnce(argv)
+    case 'run-batch':
+      return runBatch(argv)
     default:
       return usage()
   }
@@ -367,6 +381,318 @@ async function runOnce (argv) {
   }
 }
 
+async function runBatch (argv) {
+  const targetCount = toPositiveInt(argv['target-count'], 20)
+  const maxCandidates = toPositiveInt(argv['max-candidates'], Math.max(targetCount * 8, targetCount))
+  const candidateTimeoutMs = toPositiveInt(argv['candidate-timeout-ms'], 240000)
+  const progressFile = argv['progress-file'] ? String(argv['progress-file']) : ''
+  const batchRunId = argv['run-id'] || createRunId()
+  const { boss, llm } = loadRuntimeConfig()
+  const candidateProfile = buildCandidateProfile(boss)
+  const candidateProfileSummary = summarizeCandidateProfile(candidateProfile)
+  const queries = getBatchRecallKeywords(argv, boss)
+  const cityCodes = getBatchCityCodes(argv, boss)
+  const results = []
+  const errors = []
+  const visited = new Set()
+  let sentCount = 0
+  let examinedCount = 0
+  let browser = null
+  let page = null
+  let browserOpenCount = 0
+
+  const openBatchBrowser = async (reason) => {
+    browserOpenCount += 1
+    const opened = await openBrowser({ headless: argv.headless })
+    browser = opened.browser
+    page = opened.page
+    appendBatchStage(progressFile, {
+      batchRunId,
+      targetCount,
+      sentCount,
+      stage: 'browser:opened',
+      reason,
+      browserOpenCount,
+    })
+  }
+
+  const closeBatchBrowser = async () => {
+    const currentBrowser = browser
+    browser = null
+    page = null
+    await currentBrowser?.close?.().catch(() => {})
+  }
+
+  await openBatchBrowser('initial')
+  try {
+    for (const query of queries) {
+      if (sentCount >= targetCount || examinedCount >= maxCandidates) break
+      for (const city of cityCodes) {
+        if (sentCount >= targetCount || examinedCount >= maxCandidates) break
+        appendBatchStage(progressFile, {
+          batchRunId,
+          query,
+          city,
+          targetCount,
+          sentCount,
+          stage: 'search:open:start',
+        })
+        await openJobsPage(page, { query, city })
+        appendBatchStage(progressFile, {
+          batchRunId,
+          query,
+          city,
+          targetCount,
+          sentCount,
+          stage: 'search:open:done',
+        })
+
+        while (sentCount < targetCount && examinedCount < maxCandidates) {
+          const candidateIndex = examinedCount + 1
+          const runId = `${batchRunId}-${String(candidateIndex).padStart(3, '0')}`
+          let auditResult = null
+          let profile = null
+          let ruleEvaluation = null
+          let llmEvaluation = null
+          let finalDecision = null
+          let actions = []
+          let result = null
+          let error = null
+          let needsBrowserRestart = false
+          let candidatePromise = null
+
+          const appendCandidateStage = (stage, extra = {}) => {
+            appendBatchStage(progressFile, {
+              batchRunId,
+              runId,
+              candidateIndex,
+              query,
+              city,
+              profile,
+              finalDecision,
+              targetCount,
+              sentCount,
+              stage,
+              ...extra,
+            })
+          }
+
+          try {
+            candidatePromise = (async () => {
+              appendCandidateStage('extract:start')
+              const extraction = await extractCurrentJobOnPage(page)
+              profile = extraction.profile
+              appendCandidateStage('extract:done', { profile })
+
+              const jobKey = getBatchJobKey(profile)
+              if (jobKey && visited.has(jobKey)) {
+                finalDecision = { decision: 'skip', source: 'batch', reason: 'duplicate job in this batch' }
+                appendCandidateStage('duplicate:skip:start', { profile, finalDecision })
+                const duplicateActionResult = await runCurrentJobBrowserActionsOnOpenPage(page, {
+                  shouldApply: false,
+                  confirm: argv.confirm,
+                  expectedJob: profile,
+                  moveNext: true,
+                  query,
+                  city,
+                })
+                actions = duplicateActionResult.actions
+                appendCandidateStage('duplicate:skip:done', {
+                  profile,
+                  finalDecision,
+                  delivery: summarizeDeliveryActions(actions),
+                  nextJobMoved: nextJobMoved(actions),
+                })
+                return
+              }
+              if (jobKey) visited.add(jobKey)
+
+              ruleEvaluation = evaluateJobWithRules(profile, boss, candidateProfile)
+              appendCandidateStage('rules:done', {
+                profile,
+                ruleDecision: ruleEvaluation?.decision,
+                reasonCount: Array.isArray(ruleEvaluation?.reasons) ? ruleEvaluation.reasons.length : undefined,
+                greetingPlan: summarizeGreetingPlanForProgress(ruleEvaluation?.greetingPlan),
+              })
+
+              let deliveryGreetingMessage = ruleEvaluation.greetingMessage
+              let deliveryResumeImagePath = ruleEvaluation.resumeImagePath
+              if (argv.llm) appendCandidateStage('llm:start', { profile })
+              llmEvaluation = argv.llm
+                ? await evaluateJobWithLlm({ job: profile, ruleEvaluation, llmConfig: llm, candidateProfile })
+                : null
+              finalDecision = resolveFinalDecision(ruleEvaluation, llmEvaluation)
+              appendCandidateStage('decision:done', {
+                profile,
+                finalDecision,
+                llmDecision: llmEvaluation?.decision,
+              })
+
+              if (finalDecision.decision === 'apply') {
+                appendCandidateStage('greeting:start', { profile, finalDecision })
+                const greetingSelection = await buildGuardedPersonalizedGreetingSelection({
+                  job: profile,
+                  bossConfig: boss,
+                  candidateProfile,
+                  llmConfig: llm,
+                  fallbackGreeting: {
+                    rule: ruleEvaluation.greetingTemplate,
+                    message: ruleEvaluation.greetingMessage,
+                  },
+                  fallbackPlan: ruleEvaluation.greetingPlan,
+                })
+                deliveryGreetingMessage = greetingSelection.greeting.message
+                ruleEvaluation = applyGreetingSelectionToRuleEvaluation(ruleEvaluation, greetingSelection)
+                appendCandidateStage('greeting:done', {
+                  profile,
+                  finalDecision,
+                  greetingPlan: summarizeGreetingPlanForProgress(ruleEvaluation?.greetingPlan),
+                })
+              }
+              const deliveryGreetingMessageSkipReason = getGreetingPlanTextSkipReason(ruleEvaluation?.greetingPlan, deliveryGreetingMessage)
+              if (deliveryGreetingMessageSkipReason) deliveryGreetingMessage = ''
+
+              appendCandidateStage('browser-action:start', {
+                profile,
+                finalDecision,
+                willApply: finalDecision.decision === 'apply',
+                greetingPlan: summarizeGreetingPlanForProgress(ruleEvaluation?.greetingPlan),
+                messageSkipReason: deliveryGreetingMessageSkipReason || undefined,
+              })
+              const browserActionResult = await runCurrentJobBrowserActionsOnOpenPage(page, {
+                shouldApply: finalDecision.decision === 'apply',
+                message: deliveryGreetingMessage,
+                messageSkipReason: deliveryGreetingMessageSkipReason,
+                imagePath: deliveryResumeImagePath,
+                confirm: argv.confirm,
+                expectedJob: profile,
+                moveNext: true,
+                query,
+                city,
+                beforeMoveNext: ({ actions: browserActions }) => {
+                  auditResult = appendAuditLog(
+                    buildAuditRecord({
+                      runId,
+                      command: 'run-batch',
+                      dryRun: !argv.confirm,
+                      extraction: { source: 'browser', profile, raw: { pageQuery: query } },
+                      profile,
+                      candidateProfile: candidateProfileSummary,
+                      ruleEvaluation,
+                      llmEvaluation,
+                      finalDecision,
+                      actions: browserActions,
+                      errors,
+                    }),
+                    { auditFile: argv['audit-file'] }
+                  )
+                  return auditResult
+                },
+              })
+              actions = browserActionResult.actions
+              if (isSuccessfulDelivery(actions)) sentCount += 1
+              appendCandidateStage('browser-action:done', {
+                profile,
+                finalDecision,
+                delivery: summarizeDeliveryActions(actions),
+                sentCount,
+                nextJobMoved: nextJobMoved(actions),
+              })
+            })()
+
+            await withTimeout(
+              candidatePromise,
+              candidateTimeoutMs,
+              `CANDIDATE_TIMEOUT:${candidateTimeoutMs}ms`
+            )
+          } catch (err) {
+            error = err?.message ?? String(err)
+            needsBrowserRestart = isRecoverableBatchError(err)
+            errors.push({ message: error, stack: argv.debug ? err?.stack : undefined })
+            appendCandidateStage('candidate:error', {
+              profile,
+              finalDecision,
+              error,
+              recoverable: needsBrowserRestart,
+            })
+            if (needsBrowserRestart) {
+              await closeBatchBrowser()
+              await drainPromise(candidatePromise, 5000)
+            }
+          } finally {
+            examinedCount += 1
+            result = buildBatchResult({
+              batchRunId,
+              runId,
+              candidateIndex,
+              query,
+              city,
+              profile,
+              finalDecision,
+              actions,
+              sentCount,
+              targetCount,
+              auditResult,
+              error,
+            })
+            results.push(result)
+            appendProgress(progressFile, result)
+          }
+
+          if (needsBrowserRestart) {
+            appendBatchStage(progressFile, {
+              batchRunId,
+              runId,
+              candidateIndex,
+              query,
+              city,
+              targetCount,
+              sentCount,
+              stage: 'browser:recover:start',
+              error,
+            })
+            await openBatchBrowser('candidate_error')
+            await openJobsPage(page, { query, city })
+            appendBatchStage(progressFile, {
+              batchRunId,
+              runId,
+              candidateIndex,
+              query,
+              city,
+              targetCount,
+              sentCount,
+              stage: 'browser:recover:done',
+            })
+            continue
+          }
+          if (error || !nextJobMoved(actions)) break
+        }
+      }
+    }
+  } finally {
+    await closeBatchBrowser()
+  }
+
+  return {
+    ok: sentCount >= targetCount,
+    command: 'run-batch',
+    runId: batchRunId,
+    dryRun: !argv.confirm,
+    targetCount,
+    sentCount,
+    examinedCount,
+    maxCandidates,
+    candidateTimeoutMs,
+    browserOpenCount,
+    queryCount: queries.length,
+    cityCodes,
+    queries,
+    progressFile: progressFile || null,
+    results,
+    errors,
+  }
+}
+
 async function readJobFromArgs (argv) {
   if (argv.job) {
     return normalizeJobProfile(JSON.parse(fs.readFileSync(argv.job, 'utf8')))
@@ -397,6 +723,260 @@ function readOptionalJsonFile (filePath) {
 
 function hasJobArgs (argv) {
   return Boolean(argv.job || argv.title || argv.jd || argv['recall-keyword'] || argv.city || argv.salary)
+}
+
+function toPositiveInt (value, fallback) {
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+}
+
+function getBatchRecallKeywords (argv, boss) {
+  const explicit = toArray(argv['recall-keyword'])
+    .map(item => String(item ?? '').trim())
+    .filter(Boolean)
+  const configured = getEnabledRecallKeywords(boss)
+  const source = explicit.length ? explicit : configured
+  const unique = []
+  const seen = new Set()
+  for (const item of source) {
+    const key = String(item).trim()
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    unique.push(key)
+  }
+  return unique.length ? unique : ['']
+}
+
+function getBatchCityCodes (argv, boss) {
+  const explicit = toArray(argv.city)
+    .map(item => resolveCityCode(item))
+    .filter(Boolean)
+  if (explicit.length) return uniqueStrings(explicit)
+
+  const cityNames = []
+  for (const condition of boss.staticCombineRecommendJobFilterConditions ?? []) {
+    if (condition?.city) cityNames.push(condition.city)
+  }
+  for (const city of boss.anyCombineRecommendJobFilter?.cityList ?? []) {
+    if (city) cityNames.push(city)
+  }
+  for (const city of boss.expectCityList ?? []) {
+    if (city) cityNames.push(city)
+  }
+
+  const resolved = cityNames.map(item => resolveCityCode(item)).filter(Boolean)
+  return resolved.length ? uniqueStrings(resolved) : ['']
+}
+
+function resolveCityCode (value) {
+  const normalized = String(value ?? '').trim()
+  if (!normalized) return ''
+  if (/^\d+$/.test(normalized)) return normalized
+  const city = getFlatCityList().find(item => item.name === normalized)
+  return city?.code ? String(city.code) : ''
+}
+
+function getFlatCityList () {
+  if (flatCityListCache) return flatCityListCache
+  flatCityListCache = []
+  for (const group of cityGroupData?.zpData?.cityGroup ?? []) {
+    for (const city of group.cityList ?? []) {
+      flatCityListCache.push({ ...city, firstChar: group.firstChar })
+    }
+  }
+  for (const city of cityGroupData?.zpData?.hotCityList ?? []) {
+    flatCityListCache.push({ ...city, firstChar: city.firstChar })
+  }
+  return flatCityListCache
+}
+
+function uniqueStrings (items) {
+  const seen = new Set()
+  const unique = []
+  for (const item of items) {
+    const key = String(item ?? '').trim()
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    unique.push(key)
+  }
+  return unique
+}
+
+function toArray (value) {
+  if (Array.isArray(value)) return value
+  return value == null ? [] : [value]
+}
+
+function getBatchJobKey (profile) {
+  return [
+    profile?.jobId,
+    profile?.title,
+    profile?.company,
+    profile?.bossName,
+  ].map(item => String(item ?? '').trim()).filter(Boolean).join('|')
+}
+
+function buildBatchResult ({
+  batchRunId,
+  runId,
+  candidateIndex,
+  query,
+  city,
+  profile,
+  finalDecision,
+  actions,
+  sentCount,
+  targetCount,
+  auditResult = null,
+  error = null,
+}) {
+  const startChatAction = actions.find(action => action.type === 'start_chat')
+  const sendGreetingAction = actions.find(action => action.type === 'send_greeting')
+  const nextJobAction = actions.find(action => action.type === 'next_job')
+  const delivery = summarizeDeliveryActions(actions)
+  return {
+    batchRunId,
+    runId,
+    candidateIndex,
+    query,
+    city,
+    job: summarizeBatchJob(profile),
+    finalDecision,
+    startChat: summarizeActionResult(startChatAction?.result),
+    sendGreeting: summarizeActionResult(sendGreetingAction?.result),
+    nextJob: summarizeActionResult(nextJobAction?.result),
+    delivery,
+    sentCount,
+    targetCount,
+    auditFile: auditResult?.auditFile ?? null,
+    error,
+  }
+}
+
+function summarizeBatchJob (profile) {
+  if (!profile) return null
+  return {
+    jobId: profile.jobId,
+    title: profile.title,
+    company: profile.company,
+    city: profile.city,
+    salary: profile.salary,
+    experience: profile.experience,
+    degree: profile.degree,
+    recallKeyword: profile.recallKeyword,
+    bossName: profile.bossName,
+    bossTitle: profile.bossTitle,
+  }
+}
+
+function summarizeDeliveryActions (actions) {
+  const sendGreetingAction = actions.find(action => action.type === 'send_greeting')
+  const result = sendGreetingAction?.result ?? {}
+  const textSent = Boolean(result.textSent || result.textResult?.sent)
+  const imageUploaded = Boolean(result.imageUploaded || result.imageResult?.uploaded)
+  return {
+    successful: isSuccessfulDelivery(actions),
+    textSent,
+    imageUploaded,
+    textSkippedReason: result.textSkippedReason ?? result.textResult?.reason,
+    reason: result.reason,
+  }
+}
+
+function isSuccessfulDelivery (actions) {
+  const startChatAction = actions.find(action => action.type === 'start_chat')
+  const sendGreetingAction = actions.find(action => action.type === 'send_greeting')
+  const startSucceeded = Boolean(startChatAction?.result?.success)
+  const sendResult = sendGreetingAction?.result ?? {}
+  const sentSomething = Boolean(
+    sendResult.textSent ||
+    sendResult.textResult?.sent ||
+    sendResult.imageUploaded ||
+    sendResult.imageResult?.uploaded
+  )
+  return startSucceeded && sentSomething
+}
+
+function summarizeActionResult (result) {
+  if (!result) return null
+  return {
+    dryRun: result.dryRun,
+    skipped: result.skipped,
+    success: result.success,
+    clicked: result.clicked,
+    moved: result.moved,
+    textSent: result.textSent,
+    imageUploaded: result.imageUploaded,
+    reason: result.reason,
+    textSkippedReason: result.textSkippedReason,
+  }
+}
+
+function nextJobMoved (actions) {
+  const nextJobAction = actions.find(action => action.type === 'next_job')
+  if (!nextJobAction) return false
+  return nextJobAction.result?.moved !== false && !nextJobAction.result?.skipped
+}
+
+function appendProgress (progressFile, record) {
+  if (!progressFile) return
+  fs.mkdirSync(path.dirname(progressFile), { recursive: true })
+  fs.appendFileSync(progressFile, `${JSON.stringify(record)}\n`, 'utf8')
+}
+
+function appendBatchStage (progressFile, record) {
+  if (!progressFile) return
+  const { profile, ...rest } = record
+  appendProgress(progressFile, {
+    event: 'stage',
+    timestamp: new Date().toISOString(),
+    ...rest,
+    job: summarizeBatchJob(profile),
+  })
+}
+
+function summarizeGreetingPlanForProgress (greetingPlan) {
+  if (!greetingPlan || typeof greetingPlan !== 'object') return null
+  return {
+    source: greetingPlan.source,
+    fallbackReason: greetingPlan.fallbackReason ?? null,
+    characterCount: greetingPlan.characterCount,
+    guardPassed: greetingPlan.guardResult?.passed,
+    deliveryTextAvailable: greetingPlan.safetyStatus?.deliveryTextAvailable,
+    safeSummary: greetingPlan.safeSummary,
+  }
+}
+
+async function withTimeout (promise, timeoutMs, message) {
+  let timeoutId = null
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((resolve, reject) => {
+        timeoutId = setTimeout(() => {
+          const err = new Error(message)
+          err.code = 'CANDIDATE_TIMEOUT'
+          reject(err)
+        }, timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId)
+  }
+}
+
+async function drainPromise (promise, timeoutMs) {
+  if (!promise) return
+  await Promise.race([
+    promise.catch(() => {}),
+    new Promise(resolve => setTimeout(resolve, timeoutMs)),
+  ])
+}
+
+function isRecoverableBatchError (err) {
+  if (err?.code === 'CANDIDATE_TIMEOUT') return true
+  const message = String(err?.message ?? err ?? '')
+  return /Runtime\.callFunctionOn timed out|Protocol error|Target closed|Session closed|Navigation timeout|Execution context was destroyed|Cannot find context|Connection closed|detached Frame|net::ERR/i.test(message)
 }
 
 function normalizeErrors (value) {
@@ -457,6 +1037,7 @@ function usage () {
       'ggr audit-log [--event event.json]',
       'ggr run-once --job job.json [--llm] [--confirm]',
       'ggr run-once --from-browser [--recall-keyword value] [--city code] [--llm] [--confirm]',
+      'ggr run-batch --from-browser --llm --confirm [--target-count 20] [--max-candidates 160] [--candidate-timeout-ms 240000] [--progress-file file]',
     ],
   }
 }

@@ -4,7 +4,7 @@ import { inspectCapabilityProfileCache } from './capability-profile.mjs'
 import { completes } from '@geekgeekrun/utils/gpt-request.mjs'
 
 const greetingMinCharacterCount = 80
-const greetingMaxCharacterCount = 160
+const greetingMaxCharacterCount = 200
 const promptJdMaxLength = 4000
 const summaryTextLimit = 240
 
@@ -218,7 +218,7 @@ export async function generatePersonalizedGreetingWithLlm ({
           'Use Evidence-Based Framing only. Emphasize demonstrated or transferable strengths from the Candidate Capability Profile.',
           'Do not invent employers, tenure, certifications, education, salary expectations, availability, personal history, outcomes, contact information, or local paths.',
           'Do not include full resume text, resume image paths, contact information, cookies, local storage, API keys, or secrets.',
-          `Target length is ${greetingMinCharacterCount}-${greetingMaxCharacterCount} Chinese characters.`,
+          `Target length is ${greetingMinCharacterCount}-${greetingMaxCharacterCount} Chinese characters. Never exceed ${greetingMaxCharacterCount} Chinese characters.`,
           'Return strict JSON with one key: message.',
         ].join('\n'),
       },

@@ -26,6 +26,7 @@
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.0",
     "@electron-toolkit/utils": "^3.0.0",
+    "@element-plus/icons-vue": "2.3.2",
     "@geekgeekrun/boss-auto-browse-and-chat": "workspace:*",
     "@geekgeekrun/launch-bosszhipin-login-page-with-preload-extension": "workspace:*",
     "@geekgeekrun/pm": "workspace:*",
@@ -42,6 +43,7 @@
     "pinia": "^3.0.2",
     "puppeteer": "24.19.0",
     "puppeteer-extra-plugin-stealth": "2.11.2",
+    "split2": "4.2.0",
     "uuid": "^11.1.0",
     "vuedraggable": "^4.1.0"
   },
