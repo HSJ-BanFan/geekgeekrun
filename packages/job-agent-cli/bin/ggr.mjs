@@ -23,6 +23,7 @@ import {
   issueAuthorizationToken,
 } from '../src/authorization-token.mjs'
 import { runAuthorizedActionIntent } from '../src/authorized-action.mjs'
+import { runRecentApplications } from '../src/recent-applications.mjs'
 import {
   extractCurrentJobFromBrowser,
   extractCurrentJobOnPage,
@@ -39,7 +40,7 @@ import { appendAuditLog, buildAuditRecord, createRunId } from '../src/audit-log.
 let flatCityListCache = null
 
 const argv = minimist(process.argv.slice(2), {
-  boolean: ['from-browser', 'headless', 'llm', 'confirm', 'refresh'],
+  boolean: ['from-browser', 'headless', 'llm', 'confirm', 'refresh', 'include-jd', 'analyze'],
   string: [
     'job',
     'title',
@@ -66,6 +67,11 @@ const argv = minimist(process.argv.slice(2), {
     'action',
     'run-id',
     'final-decision',
+    'limit',
+    'output',
+    'analysis-output',
+    'browser-url',
+    'cdp-port',
   ],
 })
 const [command] = argv._
@@ -103,6 +109,8 @@ async function dispatch (command, argv) {
       return authorizationToken(argv)
     case 'authorized-action':
       return authorizedAction(argv)
+    case 'recent-applications':
+      return recentApplications(argv)
     case 'run-once':
       return runOnce(argv)
     case 'run-batch':
@@ -323,6 +331,22 @@ async function authorizedAction (argv) {
     headless: argv.headless,
     now: argv.now ? new Date(argv.now) : new Date(),
     ...browserJobSourceOptions(argv),
+  })
+  if (!result.ok) process.exitCode = 1
+  return result
+}
+
+async function recentApplications (argv) {
+  const result = await runRecentApplications({
+    fromBrowser: argv['from-browser'],
+    limit: argv.limit,
+    includeJd: argv['include-jd'],
+    analyze: argv.analyze,
+    outputPath: argv.output,
+    analysisOutputPath: argv['analysis-output'],
+    headless: argv.headless,
+    browserUrl: argv['browser-url'],
+    cdpPort: argv['cdp-port'],
   })
   if (!result.ok) process.exitCode = 1
   return result
@@ -1155,6 +1179,7 @@ function usage () {
       'ggr authorization-token inspect --token-id token-id [--token-file file] [--action start_chat]',
       'ggr authorization-token consume --token-id token-id [--token-file file] [--action start_chat]',
       'ggr authorized-action --action start_chat --token-id token-id [--token-file file] [--audit-file file] [--confirm]',
+      'ggr recent-applications --from-browser [--limit 100] [--include-jd] [--analyze] [--output file] [--browser-url url|--cdp-port port]',
       'ggr run-once --job job.json [--llm] [--confirm]',
       'ggr run-once --from-browser [--recall-keyword value] [--city code] [--llm] [--confirm]',
       'ggr run-batch --from-browser --llm --confirm [--target-count 20] [--max-candidates 160] [--candidate-timeout-ms 240000] [--progress-file file]',
