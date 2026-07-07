@@ -10,7 +10,7 @@ import { evaluateJobWithLlm } from '../src/llm-evaluator.mjs'
 import { resolveFinalDecision } from '../src/final-decision.mjs'
 import { buildCandidateProfile, summarizeCandidateProfile } from '../src/candidate-profile.mjs'
 import { buildOrRefreshCapabilityProfile, inspectCapabilityProfileCache } from '../src/capability-profile.mjs'
-import { buildGuardedPersonalizedGreetingPlan } from '../src/greeting-plan.mjs'
+import { buildGuardedPersonalizedGreetingPlan, buildGuardedPersonalizedGreetingSelection } from '../src/greeting-plan.mjs'
 import {
   extractCurrentJobFromBrowser,
   moveToNextJob,
@@ -225,6 +225,8 @@ async function runOnce (argv) {
   let llmEvaluation = null
   let finalDecision = null
   let auditResult = null
+  let deliveryGreetingMessage = ''
+  let deliveryResumeImagePath = ''
 
   try {
     extraction = argv['from-browser']
@@ -235,16 +237,34 @@ async function runOnce (argv) {
     candidateProfile = buildCandidateProfile(boss)
     candidateProfileSummary = summarizeCandidateProfile(candidateProfile)
     ruleEvaluation = evaluateJobWithRules(profile, boss, candidateProfile)
+    deliveryGreetingMessage = ruleEvaluation.greetingMessage
+    deliveryResumeImagePath = ruleEvaluation.resumeImagePath
     llmEvaluation = argv.llm
       ? await evaluateJobWithLlm({ job: profile, ruleEvaluation, llmConfig: llm, candidateProfile })
       : null
     finalDecision = resolveFinalDecision(ruleEvaluation, llmEvaluation)
 
+    if (finalDecision.decision === 'apply') {
+      const greetingSelection = await buildGuardedPersonalizedGreetingSelection({
+        job: profile,
+        bossConfig: boss,
+        candidateProfile,
+        llmConfig: llm,
+        fallbackGreeting: {
+          rule: ruleEvaluation.greetingTemplate,
+          message: ruleEvaluation.greetingMessage,
+        },
+        fallbackPlan: ruleEvaluation.greetingPlan,
+      })
+      deliveryGreetingMessage = greetingSelection.greeting.message
+      ruleEvaluation = applyGreetingSelectionToRuleEvaluation(ruleEvaluation, greetingSelection)
+    }
+
     if (argv['from-browser']) {
       const browserActionResult = await runCurrentJobBrowserActions({
         shouldApply: finalDecision.decision === 'apply',
-        message: ruleEvaluation.greetingMessage,
-        imagePath: ruleEvaluation.resumeImagePath,
+        message: deliveryGreetingMessage,
+        imagePath: deliveryResumeImagePath,
         confirm: argv.confirm,
         headless: argv.headless,
         expectedJob: profile,
@@ -273,8 +293,8 @@ async function runOnce (argv) {
       actions.push(...browserActionResult.actions)
     } else if (finalDecision.decision === 'apply') {
       const result = await sendGreetingToMostRecentChat({
-        message: ruleEvaluation.greetingMessage,
-        imagePath: ruleEvaluation.resumeImagePath,
+        message: deliveryGreetingMessage,
+        imagePath: deliveryResumeImagePath,
         confirm: argv.confirm,
         headless: argv.headless,
       })
@@ -384,6 +404,32 @@ function hasLlmConfig (llm) {
     String(item?.providerApiSecret ?? item?.apiKey ?? '').trim() &&
     String(item?.model ?? '').trim()
   )
+}
+
+function applyGreetingSelectionToRuleEvaluation (ruleEvaluation, { greeting, greetingPlan }) {
+  const outputGreetingMessage = greetingPlan.source === 'personalized'
+    ? '[PERSONALIZED_GREETING_OMITTED]'
+    : greeting.message
+
+  return {
+    ...ruleEvaluation,
+    greetingTemplate: greeting.rule,
+    greetingMessage: outputGreetingMessage,
+    greetingPlan,
+    presetTasks: updateGreetingTasks(ruleEvaluation.presetTasks, { greeting, greetingPlan }),
+  }
+}
+
+function updateGreetingTasks (tasks, { greeting, greetingPlan }) {
+  if (!Array.isArray(tasks)) return tasks
+  return tasks.map(task => {
+    if (task?.type !== 'send_greeting') return task
+    return {
+      ...task,
+      template: greeting.rule,
+      greetingPlan,
+    }
+  })
 }
 
 function usage () {

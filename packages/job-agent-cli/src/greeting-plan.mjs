@@ -14,6 +14,7 @@ export function buildPresetGreetingPlan (selection = {}, { fallbackReason = null
   const selectedTemplate = normalizeSelectedTemplate(selection)
   const sensitiveFragments = extractSensitiveFragments(message)
   const reasons = []
+  const summary = buildSummary({ selectedTemplate, characterCount })
 
   if (!message) reasons.push('empty_delivery_text')
   if (sensitiveFragments.length) reasons.push('sensitive_original_omitted_from_plan')
@@ -22,7 +23,9 @@ export function buildPresetGreetingPlan (selection = {}, { fallbackReason = null
     source: 'preset',
     selectedTemplate,
     fallbackReason,
-    summary: buildSummary({ selectedTemplate, characterCount }),
+    guardResult: null,
+    safeSummary: summary,
+    summary,
     characterCount,
     safetyStatus: {
       auditSafe: true,
@@ -34,7 +37,42 @@ export function buildPresetGreetingPlan (selection = {}, { fallbackReason = null
   }
 }
 
-export async function buildGuardedPersonalizedGreetingPlan ({
+export async function buildGuardedPersonalizedGreetingPlan (options = {}) {
+  const { greetingPlan } = await resolveGuardedPersonalizedGreeting(options)
+  return greetingPlan
+}
+
+export async function buildGuardedPersonalizedGreetingSelection (options = {}) {
+  const fallbackGreeting = normalizeFallbackGreeting(options.fallbackGreeting)
+  const fallbackPlan = options.fallbackPlan ?? buildPresetGreetingPlan(fallbackGreeting)
+  const { greetingPlan, deliveryMessage } = await resolveGuardedPersonalizedGreeting({
+    ...options,
+    fallbackPlan,
+    fallbackMessage: fallbackGreeting.message,
+  })
+
+  if (greetingPlan.source === 'personalized') {
+    return {
+      greeting: {
+        rule: 'personalized',
+        message: deliveryMessage,
+        source: 'personalized',
+      },
+      greetingPlan,
+    }
+  }
+
+  return {
+    greeting: {
+      rule: fallbackGreeting.rule || greetingPlan.selectedTemplate?.rule || 'default',
+      message: fallbackGreeting.message,
+      source: 'preset',
+    },
+    greetingPlan,
+  }
+}
+
+async function resolveGuardedPersonalizedGreeting ({
   job = {},
   bossConfig = {},
   candidateProfile = null,
@@ -42,6 +80,7 @@ export async function buildGuardedPersonalizedGreetingPlan ({
   storageDir,
   cacheFilePath,
   fallbackPlan = buildPresetGreetingPlan(),
+  fallbackMessage = '',
   generateGreeting = generatePersonalizedGreetingWithLlm,
 } = {}) {
   const cacheStatus = inspectCapabilityProfileCache({
@@ -52,19 +91,19 @@ export async function buildGuardedPersonalizedGreetingPlan ({
   })
 
   if (!cacheStatus.exists) {
-    return buildFallbackPlan(fallbackPlan, 'cache_missing', {
+    return buildFallbackSelection(fallbackPlan, fallbackMessage, 'cache_missing', {
       cacheStatus: summarizeCacheStatus(cacheStatus),
     })
   }
 
   if (!cacheStatus.fresh) {
-    return buildFallbackPlan(fallbackPlan, 'cache_stale', {
+    return buildFallbackSelection(fallbackPlan, fallbackMessage, 'cache_stale', {
       cacheStatus: summarizeCacheStatus(cacheStatus),
     })
   }
 
   if (!getEnabledLlmConfig(llmConfig)) {
-    return buildFallbackPlan(fallbackPlan, 'llm_unavailable', {
+    return buildFallbackSelection(fallbackPlan, fallbackMessage, 'llm_unavailable', {
       cacheStatus: summarizeCacheStatus(cacheStatus),
     })
   }
@@ -77,7 +116,7 @@ export async function buildGuardedPersonalizedGreetingPlan ({
       llmConfig,
     })
   } catch (err) {
-    return buildFallbackPlan(fallbackPlan, 'generation_failed', {
+    return buildFallbackSelection(fallbackPlan, fallbackMessage, 'generation_failed', {
       cacheStatus: summarizeCacheStatus(cacheStatus),
       error: {
         code: 'PERSONALIZED_GREETING_REQUEST_FAILED',
@@ -87,7 +126,7 @@ export async function buildGuardedPersonalizedGreetingPlan ({
   }
 
   if (generated?.ok === false) {
-    return buildFallbackPlan(fallbackPlan, mapGenerationFailureToFallbackReason(generated.error?.code), {
+    return buildFallbackSelection(fallbackPlan, fallbackMessage, mapGenerationFailureToFallbackReason(generated.error?.code), {
       cacheStatus: summarizeCacheStatus(cacheStatus),
       error: generated.error,
     })
@@ -95,7 +134,7 @@ export async function buildGuardedPersonalizedGreetingPlan ({
 
   const message = normalizeGeneratedGreeting(generated)
   if (!message) {
-    return buildFallbackPlan(fallbackPlan, 'empty_output', {
+    return buildFallbackSelection(fallbackPlan, fallbackMessage, 'empty_output', {
       cacheStatus: summarizeCacheStatus(cacheStatus),
     })
   }
@@ -107,20 +146,23 @@ export async function buildGuardedPersonalizedGreetingPlan ({
   })
 
   if (!guardResult.passed) {
-    return buildFallbackPlan(fallbackPlan, 'guard_rejected', {
+    return buildFallbackSelection(fallbackPlan, fallbackMessage, 'guard_rejected', {
       cacheStatus: summarizeCacheStatus(cacheStatus),
       guardResult,
     })
   }
 
   return {
-    source: 'personalized',
-    fallbackReason: null,
-    guardResult,
-    safeSummary: guardResult.safeSummary,
-    summary: guardResult.safeSummary,
-    characterCount: guardResult.characterCount,
-    capabilityProfile: summarizeCacheStatus(cacheStatus),
+    greetingPlan: {
+      source: 'personalized',
+      fallbackReason: null,
+      guardResult,
+      safeSummary: guardResult.safeSummary,
+      summary: guardResult.safeSummary,
+      characterCount: guardResult.characterCount,
+      capabilityProfile: summarizeCacheStatus(cacheStatus),
+    },
+    deliveryMessage: message,
   }
 }
 
@@ -282,6 +324,20 @@ function buildFallbackPlan (fallbackPlan, fallbackReason, personalization = {}) 
       reason: fallbackReason,
       ...personalization,
     },
+  }
+}
+
+function buildFallbackSelection (fallbackPlan, fallbackMessage, fallbackReason, personalization = {}) {
+  return {
+    greetingPlan: buildFallbackPlan(fallbackPlan, fallbackReason, personalization),
+    deliveryMessage: fallbackMessage,
+  }
+}
+
+function normalizeFallbackGreeting (greeting = {}) {
+  return {
+    rule: String(greeting?.rule ?? greeting?.name ?? '').trim(),
+    message: String(greeting?.message ?? '').trim(),
   }
 }
 
