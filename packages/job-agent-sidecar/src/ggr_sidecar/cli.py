@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from .application_loop import run_single_job_application_loop
 from .approval import make_terminal_approval_requester
 from .observability import build_observability_report
 from .schemas import CliToolResult
@@ -30,6 +31,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_batch_arguments(confirmed_batch)
     confirmed_batch.add_argument("--approval-timeout-ms", type=int, default=60_000)
+
+    single_job_loop = subparsers.add_parser(
+        "supervise-single-job-loop",
+        help="Run one token-gated fine-grained application loop through CLI tools.",
+    )
+    _add_single_job_loop_arguments(single_job_loop)
 
     return parser
 
@@ -75,6 +82,38 @@ def main(argv: list[str] | None = None) -> int:
         )
         return _write_result_with_observability(result, args)
 
+    if args.command == "supervise-single-job-loop":
+        result = run_single_job_application_loop(
+            repo_root=args.repo_root,
+            node=args.node,
+            timeout_ms=args.timeout_ms,
+            job_file=args.job,
+            from_browser=args.from_browser,
+            run_id=args.run_id,
+            token_file=args.token_file,
+            audit_file=args.audit_file,
+            recall_keywords=args.recall_keyword,
+            cities=args.city,
+            llm=args.llm,
+            confirm=args.confirm,
+            headless=args.headless,
+            now=args.now,
+            approval_requester=(
+                make_terminal_approval_requester(timeout_ms=args.approval_timeout_ms)
+                if args.confirm
+                else None
+            ),
+        )
+        sys.stdout.write(
+            json.dumps(
+                result.model_dump(exclude_none=True),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        sys.stdout.write("\n")
+        return 0 if result.ok else 1
+
     parser.error(f"unknown command: {args.command}")
     return 2
 
@@ -92,6 +131,24 @@ def _add_batch_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--city", action="append", default=[])
     parser.add_argument("--llm", action="store_true")
     parser.add_argument("--headless", action="store_true")
+
+
+def _add_single_job_loop_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--repo-root", type=Path, default=_default_repo_root())
+    parser.add_argument("--node", default="node")
+    parser.add_argument("--timeout-ms", type=int, default=300_000)
+    parser.add_argument("--job", type=Path)
+    parser.add_argument("--from-browser", action="store_true")
+    parser.add_argument("--run-id")
+    parser.add_argument("--token-file", type=Path)
+    parser.add_argument("--audit-file", type=Path)
+    parser.add_argument("--recall-keyword", action="append", default=[])
+    parser.add_argument("--city", action="append", default=[])
+    parser.add_argument("--llm", action="store_true")
+    parser.add_argument("--confirm", action="store_true")
+    parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--now")
+    parser.add_argument("--approval-timeout-ms", type=int, default=60_000)
 
 
 def _write_result_with_observability(

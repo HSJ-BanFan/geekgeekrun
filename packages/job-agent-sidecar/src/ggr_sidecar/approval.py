@@ -50,6 +50,35 @@ def build_confirmed_batch_approval_request(
     )
 
 
+def build_confirmed_single_job_loop_approval_request(
+    *,
+    source: str,
+    llm: bool,
+    headless: bool,
+) -> ApprovalRequest:
+    metadata = ApprovalRequestMetadata(
+        command="single-job-loop",
+        targetCount=1,
+        maxCandidates=1,
+        candidateTimeoutMs=None,
+        recallKeywordCount=0,
+        cityCount=0,
+        llm=llm,
+        headless=headless,
+        commandOptions=[
+            "--confirm",
+            "--llm" if llm else "",
+            "--headless" if headless else "",
+        ],
+    )
+    metadata.commandOptions = [item for item in metadata.commandOptions if item]
+    return ApprovalRequest(
+        kind="confirmed_single_job_loop",
+        prompt=_format_confirmed_single_job_loop_prompt(metadata, source=source),
+        metadata=metadata,
+    )
+
+
 def normalize_approval_decision(value: ApprovalDecision | dict[str, Any]) -> ApprovalDecision:
     return value if isinstance(value, ApprovalDecision) else ApprovalDecision.model_validate(value)
 
@@ -152,6 +181,22 @@ def _format_confirmed_batch_prompt(metadata: ApprovalRequestMetadata) -> str:
         f"candidateTimeoutMs: {_display_optional_int(metadata.candidateTimeoutMs)}",
         f"recallKeywordCount: {metadata.recallKeywordCount}",
         f"cityCount: {metadata.cityCount}",
+        f"llm: {_display_bool(metadata.llm)}",
+        f"headless: {_display_bool(metadata.headless)}",
+        "Sensitive originals are redacted from this prompt.",
+    ]
+    return "\n".join(lines)
+
+
+def _format_confirmed_single_job_loop_prompt(
+    metadata: ApprovalRequestMetadata,
+    *,
+    source: str,
+) -> str:
+    lines = [
+        "Approve confirmed single-job application loop?",
+        "This permits the sidecar to invoke one token-gated CLI action with --confirm.",
+        f"source: {source or 'browser'}",
         f"llm: {_display_bool(metadata.llm)}",
         f"headless: {_display_bool(metadata.headless)}",
         "Sensitive originals are redacted from this prompt.",
