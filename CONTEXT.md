@@ -36,6 +36,22 @@ _Avoid_: search keyword, job source, keyword intent
 The candidate facts used to judge whether a job fit is credible, including resume evidence, expected role, projects, experience, and relevant skills. Candidate Profile supports or weakens a Target Role Intent but is not a standalone application trigger.
 _Avoid_: resume text dump, keyword profile, configured filter
 
+**Evidence-Based Framing**:
+A truthful presentation of Candidate Profile facts that emphasizes evidence relevant to a target role without inventing missing credentials, experience, outcomes, technical depth, availability, or personal history.
+_Avoid_: fabrication, resume padding, hallucinated fit
+
+**Candidate Capability Profile**:
+A reusable analysis of the candidate's demonstrated abilities, supporting evidence, target-role direction, transferable strengths, gaps, and framing boundaries derived from the Candidate Profile and Target Role Intent.
+_Avoid_: raw resume, generated resume, job-specific pitch
+
+**Personalized Greeting**:
+A short job-specific opening message generated from a Candidate Capability Profile and a target job description. A Personalized Greeting should use Evidence-Based Framing and fall back to a preset greeting when personalization is unavailable or unsafe.
+_Avoid_: static greeting, fabricated pitch, generic template
+
+**Greeting Guard**:
+A pre-send validation step that checks a Personalized Greeting for unsupported claims, sensitive originals, unsuitable length, and other unsafe content before it can be sent.
+_Avoid_: blind generated greeting, unchecked pitch
+
 **Decision Evidence**:
 The non-secret information needed to explain why the agent skipped, deferred, or applied to a job. Decision Evidence includes job summaries, rule findings, LLM fit explanations, Attention Technology explanations, risk flags, and action outcomes.
 _Avoid_: raw private data, opaque score
