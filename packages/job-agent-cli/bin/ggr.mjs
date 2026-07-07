@@ -22,6 +22,7 @@ import {
   inspectAuthorizationToken,
   issueAuthorizationToken,
 } from '../src/authorization-token.mjs'
+import { runAuthorizedActionIntent } from '../src/authorized-action.mjs'
 import {
   extractCurrentJobFromBrowser,
   extractCurrentJobOnPage,
@@ -100,6 +101,8 @@ async function dispatch (command, argv) {
       return auditLog(argv)
     case 'authorization-token':
       return authorizationToken(argv)
+    case 'authorized-action':
+      return authorizedAction(argv)
     case 'run-once':
       return runOnce(argv)
     case 'run-batch':
@@ -308,6 +311,21 @@ function consumeAuthorizationTokenCommand (argv) {
     action: 'consume',
     ...result,
   }
+}
+
+async function authorizedAction (argv) {
+  const result = await runAuthorizedActionIntent({
+    action: argv.action ?? argv._[1],
+    tokenId: argv['token-id'],
+    tokenFile: argv['token-file'],
+    auditFile: argv['audit-file'],
+    confirm: argv.confirm,
+    headless: argv.headless,
+    now: argv.now ? new Date(argv.now) : new Date(),
+    ...browserJobSourceOptions(argv),
+  })
+  if (!result.ok) process.exitCode = 1
+  return result
 }
 
 async function runOnce (argv) {
@@ -1136,6 +1154,7 @@ function usage () {
       'ggr authorization-token issue --run-id run-id --job job.json --final-decision final.json --llm-evaluation llm.json --allowed-action start_chat [--token-file file] [--ttl-ms 600000]',
       'ggr authorization-token inspect --token-id token-id [--token-file file] [--action start_chat]',
       'ggr authorization-token consume --token-id token-id [--token-file file] [--action start_chat]',
+      'ggr authorized-action --action start_chat --token-id token-id [--token-file file] [--audit-file file] [--confirm]',
       'ggr run-once --job job.json [--llm] [--confirm]',
       'ggr run-once --from-browser [--recall-keyword value] [--city code] [--llm] [--confirm]',
       'ggr run-batch --from-browser --llm --confirm [--target-count 20] [--max-candidates 160] [--candidate-timeout-ms 240000] [--progress-file file]',

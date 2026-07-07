@@ -11,6 +11,7 @@ const sensitiveExactKeys = new Set([
   'apikey',
   'api_key',
   'authorization',
+  'authorizationtokenid',
   'greetingmessage',
   'imagepath',
   'localstorage',
@@ -19,6 +20,10 @@ const sensitiveExactKeys = new Set([
   'resumeimagepath',
   'secret',
   'token',
+  'tokenid',
+])
+const codeLikeKeys = new Set([
+  'reasoncode',
 ])
 const greetingTextKeys = new Set([
   'deliverygreeting',
@@ -51,6 +56,9 @@ const jdTextKeys = new Set([
 const possibleJdTextKeys = new Set([
   'description',
   'detail',
+  'innertext',
+  'text',
+  'visibletext',
 ])
 const evidenceSnippetKeys = new Set([
   'segment',
@@ -121,8 +129,13 @@ export function sanitizeForAudit (value, seen = new WeakSet()) {
   }
   const output = {}
   for (const [key, item] of Object.entries(value)) {
+    const normalizedKey = normalizeAuditKey(key)
     if (isSensitiveKey(key)) {
       output[key] = redactedValue
+      continue
+    }
+    if (typeof item === 'string' && codeLikeKeys.has(normalizedKey)) {
+      output[key] = item
       continue
     }
     if (typeof item === 'string' && isJdTextKey(key, item)) {
@@ -200,11 +213,12 @@ function summarizeProfile (profile) {
 function summarizeJdForAudit (text) {
   const original = String(text ?? '')
   const normalized = normalizeAuditText(original)
+  const redacted = redactSensitiveFragments(normalized)
   return {
-    summary: clipAuditText(normalized, jdSummaryMaxLength),
-    evidenceSnippets: extractJdEvidenceSnippets(normalized),
+    summary: clipAuditText(redacted, jdSummaryMaxLength),
+    evidenceSnippets: extractJdEvidenceSnippets(redacted),
     originalCharacterCount: original.length,
-    omittedCharacterCount: Math.max(0, normalized.length - jdSummaryMaxLength),
+    omittedCharacterCount: Math.max(0, redacted.length - jdSummaryMaxLength),
   }
 }
 

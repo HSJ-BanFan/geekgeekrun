@@ -52,13 +52,34 @@ export async function extractCurrentJobFromBrowser ({ headless = false, query = 
 }
 
 export async function startChatOnCurrentJob ({ confirm = false, headless = false, expectedJob = null, query = '', city = '' } = {}) {
+  const outcome = await runStartChatActionOnCurrentJob({ confirm, headless, expectedJob, query, city })
+  return outcome.result
+}
+
+export async function runStartChatActionOnCurrentJob ({ confirm = false, headless = false, expectedJob = null, query = '', city = '' } = {}) {
   const { browser, page } = await openBrowser({ headless })
   try {
     await openJobsPage(page, { query, city })
-    const extraction = await extractCurrentJobOnPage(page)
-    return await startChatOnCurrentPage(page, { confirm, expectedJob, currentProfile: extraction.profile })
+    return await runStartChatActionOnOpenPage(page, { confirm, expectedJob })
   } finally {
     await browser.close().catch(() => {})
+  }
+}
+
+export async function runStartChatActionOnOpenPage (page, { confirm = false, expectedJob = null } = {}) {
+  const extraction = await extractCurrentJobOnPage(page)
+  const jobMatch = compareExpectedJob(extraction.profile, expectedJob)
+  const result = await startChatOnCurrentPage(page, {
+    confirm,
+    expectedJob,
+    currentProfile: extraction.profile,
+  })
+  return {
+    profile: extraction.profile,
+    result: {
+      ...result,
+      jobMatch: result.jobMatch ?? jobMatch,
+    },
   }
 }
 
