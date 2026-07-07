@@ -20,6 +20,25 @@ const sensitiveExactKeys = new Set([
   'secret',
   'token',
 ])
+const greetingTextKeys = new Set([
+  'deliverygreeting',
+  'deliverygreetingmessage',
+  'deliverygreetingtext',
+  'deliverymessage',
+  'fallbackgreeting',
+  'generatedgreeting',
+  'generatedgreetingmessage',
+  'generatedgreetingtext',
+  'personalizedgreeting',
+  'personalizedgreetingmessage',
+  'personalizedgreetingtext',
+  'presetgreeting',
+  'presetgreetingmessage',
+  'presetgreetingtext',
+  'selectedgreeting',
+  'selectedgreetingmessage',
+  'selectedgreetingtext',
+])
 const jdTextKeys = new Set([
   'jd',
   'jobdescription',
@@ -126,10 +145,20 @@ export function sanitizeForAudit (value, seen = new WeakSet()) {
 function isSensitiveKey (key) {
   const normalized = normalizeAuditKey(key)
   return sensitiveExactKeys.has(normalized) ||
+    isGreetingTextKey(normalized) ||
     normalized.endsWith('secret') ||
     normalized.endsWith('apikey') ||
     normalized.endsWith('token') ||
     normalized.includes('cookie')
+}
+
+function isGreetingTextKey (normalized) {
+  return greetingTextKeys.has(normalized) ||
+    (normalized.includes('greeting') && (
+      normalized.endsWith('message') ||
+      normalized.endsWith('text') ||
+      normalized.endsWith('content')
+    ))
 }
 
 function isJdTextKey (key, value) {

@@ -72,6 +72,25 @@ export async function buildGuardedPersonalizedGreetingSelection (options = {}) {
   }
 }
 
+export function getGreetingPlanTextSkipReason (greetingPlan, message) {
+  const text = normalizeGreetingText(message)
+  if (!text) return 'NO_SAFE_GREETING_TEXT'
+  if (!greetingPlan || typeof greetingPlan !== 'object') return ''
+
+  if (greetingPlan.source === 'personalized') {
+    if (greetingPlan.guardResult?.passed !== true) return 'GREETING_GUARD_NOT_PASSED'
+    if (Number(greetingPlan.characterCount ?? 0) <= 0) return 'NO_SAFE_GREETING_TEXT'
+    return ''
+  }
+
+  if (greetingPlan.source === 'preset') {
+    if (greetingPlan.safetyStatus?.deliveryTextAvailable === false) return 'NO_SAFE_GREETING_TEXT'
+    if (greetingPlan.safetyStatus?.auditSafe === false) return 'GREETING_PLAN_NOT_AUDIT_SAFE'
+  }
+
+  return ''
+}
+
 async function resolveGuardedPersonalizedGreeting ({
   job = {},
   bossConfig = {},

@@ -114,3 +114,48 @@ test('appendAuditLog writes Greeting Plan metadata without full preset greeting 
     fs.rmSync(tempDir, { recursive: true, force: true })
   }
 })
+
+test('sanitizeForAudit redacts greeting text fields while keeping safe plan metadata', () => {
+  const generatedGreeting = '您好，我关注到岗位需要 FastAPI 和 LLM 工具集成，这是一段完整生成开场白，不应进入审计记录。'
+  const presetGreeting = '您好，我想了解这个岗位，这是一段完整预设开场白，也不应进入审计记录。'
+  const sanitized = sanitizeForAudit({
+    command: 'run-once',
+    ruleEvaluation: {
+      generatedGreetingText: generatedGreeting,
+      selectedGreetingMessage: presetGreeting,
+      greetingPlan: {
+        source: 'preset',
+        fallbackReason: 'guard_rejected',
+        safeSummary: 'Preset greeting selected from default; 0 characters.',
+        characterCount: 0,
+        personalization: {
+          guardResult: {
+            passed: false,
+            safeSummary: 'Personalized greeting failed Greeting Guard; 40 characters; unsupported_claim.',
+          },
+        },
+      },
+    },
+    actions: [
+      {
+        type: 'send_greeting',
+        result: {
+          textResult: {
+            sent: false,
+            skipped: true,
+            reason: 'NO_SAFE_GREETING_TEXT',
+          },
+        },
+      },
+    ],
+  })
+
+  const text = JSON.stringify(sanitized)
+  assert.equal(text.includes(generatedGreeting), false)
+  assert.equal(text.includes(presetGreeting), false)
+  assert.equal(sanitized.ruleEvaluation.generatedGreetingText, '[REDACTED]')
+  assert.equal(sanitized.ruleEvaluation.selectedGreetingMessage, '[REDACTED]')
+  assert.equal(sanitized.ruleEvaluation.greetingPlan.source, 'preset')
+  assert.equal(sanitized.ruleEvaluation.greetingPlan.fallbackReason, 'guard_rejected')
+  assert.equal(sanitized.actions[0].result.textResult.reason, 'NO_SAFE_GREETING_TEXT')
+})

@@ -10,7 +10,11 @@ import { evaluateJobWithLlm } from '../src/llm-evaluator.mjs'
 import { resolveFinalDecision } from '../src/final-decision.mjs'
 import { buildCandidateProfile, summarizeCandidateProfile } from '../src/candidate-profile.mjs'
 import { buildOrRefreshCapabilityProfile, inspectCapabilityProfileCache } from '../src/capability-profile.mjs'
-import { buildGuardedPersonalizedGreetingPlan, buildGuardedPersonalizedGreetingSelection } from '../src/greeting-plan.mjs'
+import {
+  buildGuardedPersonalizedGreetingPlan,
+  buildGuardedPersonalizedGreetingSelection,
+  getGreetingPlanTextSkipReason,
+} from '../src/greeting-plan.mjs'
 import {
   extractCurrentJobFromBrowser,
   moveToNextJob,
@@ -226,6 +230,7 @@ async function runOnce (argv) {
   let finalDecision = null
   let auditResult = null
   let deliveryGreetingMessage = ''
+  let deliveryGreetingMessageSkipReason = ''
   let deliveryResumeImagePath = ''
 
   try {
@@ -259,11 +264,14 @@ async function runOnce (argv) {
       deliveryGreetingMessage = greetingSelection.greeting.message
       ruleEvaluation = applyGreetingSelectionToRuleEvaluation(ruleEvaluation, greetingSelection)
     }
+    deliveryGreetingMessageSkipReason = getGreetingPlanTextSkipReason(ruleEvaluation?.greetingPlan, deliveryGreetingMessage)
+    if (deliveryGreetingMessageSkipReason) deliveryGreetingMessage = ''
 
     if (argv['from-browser']) {
       const browserActionResult = await runCurrentJobBrowserActions({
         shouldApply: finalDecision.decision === 'apply',
         message: deliveryGreetingMessage,
+        messageSkipReason: deliveryGreetingMessageSkipReason,
         imagePath: deliveryResumeImagePath,
         confirm: argv.confirm,
         headless: argv.headless,
@@ -294,6 +302,7 @@ async function runOnce (argv) {
     } else if (finalDecision.decision === 'apply') {
       const result = await sendGreetingToMostRecentChat({
         message: deliveryGreetingMessage,
+        messageSkipReason: deliveryGreetingMessageSkipReason,
         imagePath: deliveryResumeImagePath,
         confirm: argv.confirm,
         headless: argv.headless,

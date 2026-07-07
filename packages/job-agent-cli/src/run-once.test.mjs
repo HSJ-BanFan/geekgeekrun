@@ -236,6 +236,56 @@ test('run-once falls back to the preset greeting when personalization is unavail
   })
 })
 
+test('run-once skips text when no safe greeting exists while preserving image upload planning', async () => {
+  await withTempRuntime(async ({ tempHome, storageDir, bossConfig, resume }) => {
+    const imagePath = path.join(storageDir, 'private-resume.png')
+    const noTextBossConfig = {
+      ...bossConfig,
+      autoStartChatGreetingMessage: '',
+      autoStartChatGreetingMessageRules: [],
+      autoStartChatGreetingImageEnabled: true,
+      autoStartChatGreetingImagePath: imagePath,
+    }
+    const requests = []
+    const server = await startFakeChatCompletionsServer({
+      requests,
+      evaluationContent: JSON.stringify(completeLlmEvaluation({ decision: 'apply' })),
+      greetingMessage: safePersonalizedGreeting(),
+    })
+
+    try {
+      writeRuntimeConfig(tempHome, noTextBossConfig, llmConfigForServer(server), resume)
+      const auditFile = path.join(storageDir, 'run-once-no-safe-text-audit.jsonl')
+      const { stdout } = await runGgr(tempHome, [
+        'run-once',
+        '--llm',
+        '--audit-file',
+        auditFile,
+        '--title',
+        targetJob().title,
+        '--jd',
+        targetJob().jd,
+      ])
+      const output = JSON.parse(stdout)
+      const auditText = fs.readFileSync(auditFile, 'utf8')
+
+      assert.equal(output.finalDecision.decision, 'apply')
+      assert.equal(output.ruleEvaluation.greetingPlan.source, 'preset')
+      assert.equal(output.ruleEvaluation.greetingPlan.fallbackReason, 'cache_missing')
+      assert.equal(output.ruleEvaluation.greetingPlan.safetyStatus.deliveryTextAvailable, false)
+      assert.equal(output.actions[0].type, 'send_greeting')
+      assert.equal(output.actions[0].result.wouldSendMessage, false)
+      assert.equal(output.actions[0].result.textResult.skipped, true)
+      assert.equal(output.actions[0].result.textResult.reason, 'NO_SAFE_GREETING_TEXT')
+      assert.equal(output.actions[0].result.wouldUploadImage, true)
+      assert.equal(auditText.includes(imagePath), false)
+      assert.deepEqual(requests.map(request => request.kind), ['evaluation'])
+    } finally {
+      await server.close()
+    }
+  })
+})
+
 async function runGgr (tempHome, args) {
   return await execFileAsync(process.execPath, [
     path.resolve('bin', 'ggr.mjs'),

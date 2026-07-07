@@ -74,6 +74,7 @@ export async function moveToNextJob ({ confirm = false, headless = false, query 
 export async function runCurrentJobBrowserActions ({
   shouldApply,
   message,
+  messageSkipReason = '',
   imagePath,
   confirm = false,
   headless = false,
@@ -89,6 +90,7 @@ export async function runCurrentJobBrowserActions ({
     return await runCurrentJobBrowserActionsOnOpenPage(page, {
       shouldApply,
       message,
+      messageSkipReason,
       imagePath,
       confirm,
       expectedJob,
@@ -105,6 +107,7 @@ export async function runCurrentJobBrowserActions ({
 export async function runCurrentJobBrowserActionsOnOpenPage (page, {
   shouldApply,
   message,
+  messageSkipReason = '',
   imagePath,
   confirm = false,
   expectedJob = null,
@@ -128,11 +131,7 @@ export async function runCurrentJobBrowserActionsOnOpenPage (page, {
       currentJob: extraction.profile,
       jobMatch,
     }
-    const sendResult = {
-      dryRun: true,
-      wouldSendMessage: Boolean(message),
-      wouldUploadImage: Boolean(imagePath),
-    }
+    const sendResult = buildDryRunGreetingSendResult({ message, messageSkipReason, imagePath })
     actions.push({ type: 'start_chat', result: startChatResult })
     actions.push({ type: 'send_greeting', result: sendResult })
 
@@ -178,7 +177,7 @@ export async function runCurrentJobBrowserActionsOnOpenPage (page, {
     })
     startChatResult.jobRelocation = summarizeJobRelocation(jobRelocation)
     const sendResult = startChatResult.success
-      ? await sendGreetingToCurrentSurfaceOrRecentChat(page, { message, imagePath, authorizedJob: jobRelocation.profile })
+      ? await sendGreetingToCurrentSurfaceOrRecentChat(page, { message, messageSkipReason, imagePath, authorizedJob: jobRelocation.profile })
       : { skipped: true, reason: 'start chat did not succeed' }
     actions.push({ type: 'start_chat', result: startChatResult })
     actions.push({ type: 'send_greeting', result: sendResult })
@@ -228,9 +227,9 @@ export async function runCurrentJobBrowserActionsOnOpenPage (page, {
       currentProfile: extraction.profile,
     })
     const sendResult = !confirm
-      ? { dryRun: true, wouldSendMessage: Boolean(message), wouldUploadImage: Boolean(imagePath) }
+      ? buildDryRunGreetingSendResult({ message, messageSkipReason, imagePath })
       : startChatResult.success
-        ? await sendGreetingToCurrentSurfaceOrRecentChat(page, { message, imagePath, authorizedJob: extraction.profile })
+        ? await sendGreetingToCurrentSurfaceOrRecentChat(page, { message, messageSkipReason, imagePath, authorizedJob: extraction.profile })
         : { skipped: true, reason: 'start chat did not succeed' }
     actions.push({ type: 'start_chat', result: startChatResult })
     actions.push({ type: 'send_greeting', result: sendResult })
@@ -396,16 +395,16 @@ function pushRelocationFailureActions (actions, {
   }
 }
 
-export async function sendGreetingToMostRecentChat ({ message, imagePath, confirm = false, headless = false } = {}) {
+export async function sendGreetingToMostRecentChat ({ message, messageSkipReason = '', imagePath, confirm = false, headless = false } = {}) {
   if (!confirm) {
-    return { dryRun: true, wouldSendMessage: Boolean(message), wouldUploadImage: Boolean(imagePath) }
+    return buildDryRunGreetingSendResult({ message, messageSkipReason, imagePath })
   }
   const { browser, page } = await openBrowser({ headless })
   try {
     await openChatPage(page)
     const clicked = await clickMostRecentConversation(page)
     if (!clicked) return { clicked: false, textSent: false, imageUploaded: false }
-    const result = await sendGreetingOnCurrentSurface(page, { message, imagePath })
+    const result = await sendGreetingOnCurrentSurface(page, { message, messageSkipReason, imagePath })
     return { clicked, ...result }
   } finally {
     await browser.close().catch(() => {})
@@ -645,9 +644,9 @@ function summarizeAddFriendResponse (payload) {
   }
 }
 
-export async function sendGreetingToCurrentSurfaceOrRecentChat (page, { message, imagePath, authorizedJob = null } = {}) {
-  const currentSurfaceResult = await sendGreetingOnCurrentSurface(page, { message, imagePath })
-  if (currentSurfaceResult.textSent || currentSurfaceResult.imageUploaded) {
+export async function sendGreetingToCurrentSurfaceOrRecentChat (page, { message, messageSkipReason = '', imagePath, authorizedJob = null } = {}) {
+  const currentSurfaceResult = await sendGreetingOnCurrentSurface(page, { message, messageSkipReason, imagePath })
+  if (currentSurfaceResult.textSent || currentSurfaceResult.imageUploaded || currentSurfaceResult.skipped) {
     return { ...currentSurfaceResult, fallbackUsed: false }
   }
   await openChatPage(page)
@@ -666,7 +665,7 @@ export async function sendGreetingToCurrentSurfaceOrRecentChat (page, { message,
       jobMatchGuard,
     }
   }
-  const fallbackResult = await sendGreetingOnCurrentSurface(page, { message, imagePath })
+  const fallbackResult = await sendGreetingOnCurrentSurface(page, { message, messageSkipReason, imagePath })
   return { clickedRecentConversation: true, jobMatchGuard, ...fallbackResult, fallbackUsed: true }
 }
 
@@ -1043,18 +1042,51 @@ async function clickMostRecentConversation (page) {
   return true
 }
 
-async function sendGreetingOnCurrentSurface (page, { message, imagePath }) {
+async function sendGreetingOnCurrentSurface (page, { message, messageSkipReason = '', imagePath }) {
   const textResult = message
     ? await sendTextOnCurrentSurface(page, message)
-    : { sent: false, reason: 'NO_MESSAGE' }
+    : buildSkippedTextResult(messageSkipReason)
   const imageResult = imagePath
     ? await sendImageOnCurrentSurface(page, imagePath)
     : { uploaded: false, reason: 'NO_IMAGE' }
-  return {
+  const result = {
     textSent: textResult.sent,
     imageUploaded: imageResult.uploaded,
     textResult,
     imageResult,
+  }
+  if (textResult.skipped) result.textSkippedReason = textResult.reason
+  if (textResult.skipped && !imagePath) {
+    result.skipped = true
+    result.reason = textResult.reason
+  }
+  return result
+}
+
+function buildDryRunGreetingSendResult ({ message, messageSkipReason = '', imagePath } = {}) {
+  const wouldSendMessage = Boolean(message)
+  const wouldUploadImage = Boolean(imagePath)
+  const result = {
+    dryRun: true,
+    wouldSendMessage,
+    wouldUploadImage,
+  }
+  if (!wouldSendMessage) {
+    result.textResult = buildSkippedTextResult(messageSkipReason)
+    result.textSkippedReason = result.textResult.reason
+  }
+  if (!wouldSendMessage && !wouldUploadImage) {
+    result.skipped = true
+    result.reason = result.textResult.reason
+  }
+  return result
+}
+
+function buildSkippedTextResult (messageSkipReason = '') {
+  return {
+    sent: false,
+    skipped: true,
+    reason: messageSkipReason || 'NO_MESSAGE',
   }
 }
 

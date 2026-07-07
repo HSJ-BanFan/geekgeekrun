@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { test } from 'node:test'
 
 import {
@@ -254,6 +257,107 @@ test('runCurrentJobBrowserActions confirmed apply clicks a matching job card and
   assert.equal(startChatAction.result.jobRelocation.jobIdentityAnchor, 'authorized-job')
 })
 
+test('runCurrentJobBrowserActions confirmed apply sends safe text after job identity verification', async () => {
+  const sentMessages = []
+  const page = createJobsPageFake({
+    currentProfile: {
+      jobId: 'authorized-job',
+      title: '后端开发',
+      company: '示例科技',
+    },
+    jobList: [
+      { jobId: 'authorized-job', title: '后端开发', company: '示例科技' },
+    ],
+    startChatButtonState: {
+      found: true,
+      text: '立即沟通',
+      disabled: false,
+      canStart: true,
+    },
+    chatInputAvailable: true,
+    onTypedMessage: message => {
+      sentMessages.push(message)
+    },
+  })
+
+  const result = await runCurrentJobBrowserActionsOnOpenPage(page, {
+    shouldApply: true,
+    confirm: true,
+    expectedJob: {
+      jobId: 'authorized-job',
+      title: '后端开发',
+      company: '示例科技',
+    },
+    message: '您好，我想沟通这个岗位。',
+    moveNext: false,
+  })
+
+  const startChatAction = result.actions.find(action => action.type === 'start_chat')
+  const sendGreetingAction = result.actions.find(action => action.type === 'send_greeting')
+  assert.equal(startChatAction.result.success, true)
+  assert.equal(sendGreetingAction.result.textSent, true)
+  assert.deepEqual(sentMessages, ['您好，我想沟通这个岗位。'])
+})
+
+test('runCurrentJobBrowserActions confirmed apply skips unsafe text while preserving image upload', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ggr-browser-action-image-'))
+  const imagePath = path.join(tempDir, 'resume.png')
+  const sentMessages = []
+  const uploadedImages = []
+
+  try {
+    fs.writeFileSync(imagePath, 'fake image bytes')
+    const page = createJobsPageFake({
+      currentProfile: {
+        jobId: 'authorized-job',
+        title: '后端开发',
+        company: '示例科技',
+      },
+      jobList: [
+        { jobId: 'authorized-job', title: '后端开发', company: '示例科技' },
+      ],
+      startChatButtonState: {
+        found: true,
+        text: '立即沟通',
+        disabled: false,
+        canStart: true,
+      },
+      chatInputAvailable: true,
+      imageUploadAvailable: true,
+      onTypedMessage: message => {
+        sentMessages.push(message)
+      },
+      onImageUpload: filePath => {
+        uploadedImages.push(filePath)
+      },
+    })
+
+    const result = await runCurrentJobBrowserActionsOnOpenPage(page, {
+      shouldApply: true,
+      confirm: true,
+      expectedJob: {
+        jobId: 'authorized-job',
+        title: '后端开发',
+        company: '示例科技',
+      },
+      message: '',
+      messageSkipReason: 'NO_SAFE_GREETING_TEXT',
+      imagePath,
+      moveNext: false,
+    })
+
+    const sendGreetingAction = result.actions.find(action => action.type === 'send_greeting')
+    assert.equal(sendGreetingAction.result.textSent, false)
+    assert.equal(sendGreetingAction.result.textResult.skipped, true)
+    assert.equal(sendGreetingAction.result.textResult.reason, 'NO_SAFE_GREETING_TEXT')
+    assert.equal(sendGreetingAction.result.imageUploaded, true)
+    assert.deepEqual(sentMessages, [])
+    assert.deepEqual(uploadedImages, [imagePath])
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
 test('runCurrentJobBrowserActions confirmed apply fails closed when relocation cannot find the job identity anchor', async () => {
   let scrollCount = 0
   const page = createJobsPageFake({
@@ -378,6 +482,13 @@ function createJobsPageFake ({
   onRelocationScroll = () => {},
   resolveClickedProfile = job => job,
   onJobCardClick = () => {},
+  chatInputAvailable = false,
+  chatSendButtonAvailable = true,
+  imageUploadAvailable = false,
+  onTypedMessage = () => {},
+  onImageUpload = () => {},
+  onStartChatClick = () => {},
+  onSendClick = () => {},
 } = {}) {
   let selectedProfile = currentProfile
   return {
@@ -425,11 +536,44 @@ function createJobsPageFake ({
     },
     async $ (selector) {
       if (selector === '.job-detail-box .op-btn.op-btn-chat') {
-        return null
+        if (!startChatButtonState.found) return null
+        return {
+          async click () {
+            onStartChatClick()
+          },
+        }
+      }
+      if (selector === '.chat-conversation .message-controls .chat-input' && chatInputAvailable) {
+        return {
+          async click () {},
+          async evaluate () {},
+          async type (message) {
+            onTypedMessage(message)
+          },
+        }
+      }
+      if (selector === '.chat-conversation .message-controls .chat-op .btn-send:not(.disabled)' && chatSendButtonAvailable) {
+        return {
+          async click () {
+            onSendClick()
+          },
+        }
       }
       return null
     },
     async $$ (selector) {
+      if (selector === '.chat-conversation input[type="file"]' && imageUploadAvailable) {
+        return [
+          {
+            async evaluate () {
+              return true
+            },
+            async uploadFile (filePath) {
+              onImageUpload(filePath)
+            },
+          },
+        ]
+      }
       if (selector !== 'ul.rec-job-list li.job-card-box') return []
       return jobList.map(job => ({
         async evaluate () {},
@@ -440,7 +584,14 @@ function createJobsPageFake ({
       }))
     },
     async waitForResponse () {
-      return null
+      return {
+        async json () {
+          return { code: 0 }
+        },
+      }
+    },
+    async waitForSelector () {
+      return {}
     },
   }
 }
