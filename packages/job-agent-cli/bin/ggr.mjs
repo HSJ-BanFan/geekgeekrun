@@ -18,6 +18,11 @@ import {
   getGreetingPlanTextSkipReason,
 } from '../src/greeting-plan.mjs'
 import {
+  consumeAuthorizationToken,
+  inspectAuthorizationToken,
+  issueAuthorizationToken,
+} from '../src/authorization-token.mjs'
+import {
   extractCurrentJobFromBrowser,
   extractCurrentJobOnPage,
   moveToNextJob,
@@ -51,6 +56,13 @@ const argv = minimist(process.argv.slice(2), {
     'actions',
     'error',
     'audit-file',
+    'allowed-action',
+    'token-file',
+    'token-id',
+    'ttl-ms',
+    'expires-at',
+    'now',
+    'action',
     'run-id',
     'final-decision',
   ],
@@ -86,6 +98,8 @@ async function dispatch (command, argv) {
       return nextJob(argv)
     case 'audit-log':
       return auditLog(argv)
+    case 'authorization-token':
+      return authorizationToken(argv)
     case 'run-once':
       return runOnce(argv)
     case 'run-batch':
@@ -227,6 +241,73 @@ async function auditLog (argv) {
       })
   const result = appendAuditLog(entry, { auditFile: argv['audit-file'] })
   return { ok: true, command: 'audit-log', result }
+}
+
+async function authorizationToken (argv) {
+  const subcommand = argv._[1]
+  switch (subcommand) {
+    case 'issue':
+      return issueAuthorizationTokenCommand(argv)
+    case 'inspect':
+      return inspectAuthorizationTokenCommand(argv)
+    case 'consume':
+      return consumeAuthorizationTokenCommand(argv)
+    default:
+      return {
+        ok: true,
+        command: 'authorization-token',
+        subcommands: ['issue', 'inspect', 'consume'],
+      }
+  }
+}
+
+async function issueAuthorizationTokenCommand (argv) {
+  const profile = await readJobFromArgs(argv)
+  const result = issueAuthorizationToken({
+    runId: argv['run-id'],
+    job: profile,
+    finalDecision: readFinalDecisionArg(argv['final-decision']),
+    ruleEvaluation: readOptionalJsonFile(argv.evaluation),
+    llmEvaluation: readOptionalJsonFile(argv['llm-evaluation']),
+    allowedActions: getAllowedActions(argv),
+    ttlMs: argv['ttl-ms'] ? Number(argv['ttl-ms']) : undefined,
+    expiresAt: argv['expires-at'],
+    now: argv.now ? new Date(argv.now) : new Date(),
+    tokenFile: argv['token-file'],
+  })
+  return {
+    command: 'authorization-token',
+    action: 'issue',
+    ...result,
+  }
+}
+
+function inspectAuthorizationTokenCommand (argv) {
+  const result = inspectAuthorizationToken({
+    tokenId: argv['token-id'],
+    tokenFile: argv['token-file'],
+    now: argv.now ? new Date(argv.now) : new Date(),
+    action: argv.action,
+  })
+  return {
+    command: 'authorization-token',
+    action: 'inspect',
+    ...result,
+  }
+}
+
+function consumeAuthorizationTokenCommand (argv) {
+  const result = consumeAuthorizationToken({
+    tokenId: argv['token-id'],
+    tokenFile: argv['token-file'],
+    now: argv.now ? new Date(argv.now) : new Date(),
+    action: argv.action,
+  })
+  return {
+    command: 'authorization-token',
+    action: 'consume',
+    ...result,
+  }
 }
 
 async function runOnce (argv) {
@@ -721,6 +802,23 @@ function readOptionalJsonFile (filePath) {
   return filePath ? readJsonFile(filePath) : null
 }
 
+function readFinalDecisionArg (value) {
+  if (!value) return null
+  const raw = String(value)
+  if (fs.existsSync(raw)) return readJsonFile(raw)
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return { decision: raw, source: 'cli' }
+  }
+}
+
+function getAllowedActions (argv) {
+  const explicit = toArray(argv['allowed-action'])
+  if (explicit.length) return explicit
+  return toArray(argv.actions)
+}
+
 function hasJobArgs (argv) {
   return Boolean(argv.job || argv.title || argv.jd || argv['recall-keyword'] || argv.city || argv.salary)
 }
@@ -1035,6 +1133,9 @@ function usage () {
       'ggr send-greeting --job job.json [--confirm]',
       'ggr next-job [--recall-keyword value] [--city code] [--confirm]',
       'ggr audit-log [--event event.json]',
+      'ggr authorization-token issue --run-id run-id --job job.json --final-decision final.json --llm-evaluation llm.json --allowed-action start_chat [--token-file file] [--ttl-ms 600000]',
+      'ggr authorization-token inspect --token-id token-id [--token-file file] [--action start_chat]',
+      'ggr authorization-token consume --token-id token-id [--token-file file] [--action start_chat]',
       'ggr run-once --job job.json [--llm] [--confirm]',
       'ggr run-once --from-browser [--recall-keyword value] [--city code] [--llm] [--confirm]',
       'ggr run-batch --from-browser --llm --confirm [--target-count 20] [--max-candidates 160] [--candidate-timeout-ms 240000] [--progress-file file]',

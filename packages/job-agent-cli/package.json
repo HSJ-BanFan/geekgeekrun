@@ -8,8 +8,8 @@
     "ggr": "./bin/ggr.mjs"
   },
   "scripts": {
-    "test": "node --test src/candidate-profile.test.mjs src/capability-profile.test.mjs src/greeting-plan.test.mjs src/run-once.test.mjs src/policy.test.mjs src/final-decision.test.mjs src/browser-actions.test.mjs src/audit-log.test.mjs",
-    "check": "node --check bin/ggr.mjs && node --check src/config.mjs && node --check src/job-profile.mjs && node --check src/sensitive-text.mjs && node --check src/greeting-plan.mjs && node --check src/candidate-profile.mjs && node --check src/capability-profile.mjs && node --check src/policy.mjs && node --check src/llm-evaluator.mjs && node --check src/final-decision.mjs && node --check src/browser-actions.mjs && node --check src/audit-log.mjs"
+    "test": "node --test src/candidate-profile.test.mjs src/capability-profile.test.mjs src/greeting-plan.test.mjs src/run-once.test.mjs src/policy.test.mjs src/final-decision.test.mjs src/browser-actions.test.mjs src/audit-log.test.mjs src/authorization-token.test.mjs",
+    "check": "node --check bin/ggr.mjs && node --check src/config.mjs && node --check src/job-profile.mjs && node --check src/sensitive-text.mjs && node --check src/greeting-plan.mjs && node --check src/candidate-profile.mjs && node --check src/capability-profile.mjs && node --check src/policy.mjs && node --check src/llm-evaluator.mjs && node --check src/final-decision.mjs && node --check src/browser-actions.mjs && node --check src/audit-log.mjs && node --check src/authorization-token.mjs"
   },
   "dependencies": {
     "@geekgeekrun/geek-auto-start-chat-with-boss": "workspace:*",

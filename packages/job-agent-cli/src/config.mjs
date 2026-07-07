@@ -53,6 +53,10 @@ export function getAuditLogPath () {
   return path.join(storageFilePath, 'job-agent-audit.jsonl')
 }
 
+export function getAuthorizationTokenStorePath () {
+  return path.join(storageFilePath, 'job-agent-authorization-tokens.json')
+}
+
 export function readBrowserState () {
   return {
     cookies: readStorageFile('boss-cookies.json'),
