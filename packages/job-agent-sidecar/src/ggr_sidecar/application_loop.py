@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import tempfile
+import time
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
@@ -13,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from .approval import (
     ApprovalRequester,
     approval_trace_from_decision,
+    build_confirmed_bounded_tokened_batch_approval_request,
     build_confirmed_single_job_loop_approval_request,
     missing_approval_trace,
     normalize_approval_decision,
@@ -85,6 +87,12 @@ class AuthorizedActionOutput(FlexibleCliModel):
     auditResult: dict[str, Any] | None = None
 
 
+class NextJobOutput(FlexibleCliModel):
+    ok: bool
+    command: Literal["next-job"]
+    result: dict[str, Any] | None = None
+
+
 class FineGrainedCliToolResult(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -105,6 +113,7 @@ class FineGrainedCliToolResult(BaseModel):
     stderr: str = ""
     stdout: str = ""
     output: Any = None
+    reasonCode: str | None = None
     parseError: str | None = None
     validationErrors: list[ValidationFailure] | None = None
 
@@ -122,6 +131,7 @@ class FineGrainedToolTrace(FlexibleCliModel):
     runId: str | None = None
     jobId: str | None = None
     action: str | None = None
+    decisionType: str | None = None
     reasonCode: str | None = None
     auditRecordCount: int = 0
     failureCategory: str | None = None
@@ -180,6 +190,93 @@ class ApplicationLoopResult(FlexibleCliModel):
     failureCategory: str | None = None
 
 
+BatchStatus = Literal[
+    "completed",
+    "failed",
+    "stopped",
+    "approval_denied",
+    "approval_timeout",
+    "approval_cancelled",
+    "approval_missing",
+]
+
+
+class BoundedBatchCandidateProgress(FlexibleCliModel):
+    candidateIndex: int
+    runId: str
+    status: Literal["applied", "skipped", "failed", "stopped"]
+    dryRun: bool
+    jobId: str | None = None
+    decisionType: str | None = None
+    appliedCount: int
+    examinedCount: int
+    durationMs: int | None = None
+    auditRecordCount: int = 0
+    toolCalls: list[FineGrainedToolTrace] = Field(default_factory=list)
+    failureCategory: str | None = None
+    reasonCodes: list[str] = Field(default_factory=list)
+
+
+class BoundedBatchTrace(FlexibleCliModel):
+    toolName: Literal["bounded-tokened-batch"] = "bounded-tokened-batch"
+    status: BatchStatus
+    dryRun: bool
+    batchRunId: str
+    targetCount: int
+    maxCandidates: int
+    candidateTimeoutMs: int
+    approval: ApprovalTraceMetadata | None = None
+    candidates: list[BoundedBatchCandidateProgress] = Field(default_factory=list)
+    appliedCount: int = 0
+    examinedCount: int = 0
+    currentCandidateIndex: int | None = None
+    currentRunId: str | None = None
+    currentJobId: str | None = None
+    failureCategory: str | None = None
+    reasonCodes: list[str] = Field(default_factory=list)
+    stopReason: str | None = None
+    stopDecision: str = "stop_without_continuing_actions"
+
+
+class BoundedBatchRecoveryLocation(FlexibleCliModel):
+    candidateIndex: int | None = None
+    runId: str | None = None
+    jobId: str | None = None
+    reasonCodes: list[str] = Field(default_factory=list)
+
+
+class BoundedBatchRecovery(FlexibleCliModel):
+    recommendation: str
+    safeOptions: list[str] = Field(default_factory=list)
+    canAutomaticallyContinueRealActions: bool = False
+    stoppedAt: BoundedBatchRecoveryLocation | None = None
+    completedRunIds: list[str] = Field(default_factory=list)
+    completedJobIds: list[str] = Field(default_factory=list)
+    failedRunIds: list[str] = Field(default_factory=list)
+    failedJobIds: list[str] = Field(default_factory=list)
+    failureCategory: str | None = None
+    reasonCodes: list[str] = Field(default_factory=list)
+    explanation: str
+
+
+class BoundedBatchResult(FlexibleCliModel):
+    ok: bool
+    status: BatchStatus
+    dryRun: bool
+    batchRunId: str
+    targetCount: int
+    maxCandidates: int
+    candidateTimeoutMs: int
+    examinedCount: int
+    appliedCount: int
+    progress: list[BoundedBatchCandidateProgress] = Field(default_factory=list)
+    approval: ApprovalTraceMetadata | None = None
+    trace: BoundedBatchTrace
+    recovery: BoundedBatchRecovery
+    failureCategory: str | None = None
+    stopReason: str | None = None
+
+
 OutputT = TypeVar("OutputT", bound=BaseModel)
 def run_single_job_application_loop(
     *,
@@ -198,6 +295,7 @@ def run_single_job_application_loop(
     headless: bool = False,
     now: str | None = None,
     approval_requester: ApprovalRequester | None = None,
+    strategy_approval: ApprovalTraceMetadata | None = None,
     runner: CompletedRunner = subprocess.run,
 ) -> ApplicationLoopResult:
     root = Path(repo_root) if repo_root is not None else _default_repo_root()
@@ -205,12 +303,16 @@ def run_single_job_application_loop(
     normalized_run_id = run_id or f"sidecar-{uuid.uuid4().hex[:12]}"
     normalized_keywords = list(recall_keywords or [])
     normalized_cities = list(cities or [])
-    approval = _approval_for_single_job_loop(
-        confirm=confirm,
-        source="job-file" if job_file else "browser",
-        llm=llm,
-        headless=headless,
-        approval_requester=approval_requester,
+    approval = (
+        strategy_approval
+        if confirm and strategy_approval is not None
+        else _approval_for_single_job_loop(
+            confirm=confirm,
+            source="job-file" if job_file else "browser",
+            llm=llm,
+            headless=headless,
+            approval_requester=approval_requester,
+        )
     )
     if confirm and (approval is None or not approval.approved):
         return _build_loop_result(
@@ -405,6 +507,287 @@ def run_single_job_application_loop(
         )
 
 
+def run_bounded_tokened_application_batch(
+    *,
+    repo_root: Path | str | None = None,
+    node: str = "node",
+    timeout_ms: int = 300_000,
+    batch_run_id: str | None = None,
+    token_file: Path | str | None = None,
+    audit_file: Path | str | None = None,
+    target_count: int = 1,
+    max_candidates: int | None = None,
+    candidate_timeout_ms: int | None = None,
+    max_token_validation_failures: int = 1,
+    recall_keywords: Sequence[str] | None = None,
+    cities: Sequence[str] | None = None,
+    llm: bool = False,
+    confirm: bool = False,
+    headless: bool = False,
+    now: str | None = None,
+    approval_requester: ApprovalRequester | None = None,
+    runner: CompletedRunner = subprocess.run,
+) -> BoundedBatchResult:
+    root = Path(repo_root) if repo_root is not None else _default_repo_root()
+    cli_path = root / "packages" / "job-agent-cli" / "bin" / "ggr.mjs"
+    normalized_batch_run_id = batch_run_id or f"sidecar-batch-{uuid.uuid4().hex[:12]}"
+    normalized_target_count = _positive_int(target_count, 1)
+    normalized_max_candidates = _positive_int(
+        max_candidates,
+        max(normalized_target_count * 8, normalized_target_count),
+    )
+    normalized_candidate_timeout_ms = _positive_int(
+        candidate_timeout_ms,
+        timeout_ms,
+    )
+    normalized_token_failure_limit = _positive_int(max_token_validation_failures, 1)
+    normalized_keywords = list(recall_keywords or [])
+    normalized_cities = list(cities or [])
+
+    approval = _approval_for_bounded_tokened_batch(
+        confirm=confirm,
+        target_count=normalized_target_count,
+        max_candidates=normalized_max_candidates,
+        candidate_timeout_ms=normalized_candidate_timeout_ms,
+        recall_keywords=normalized_keywords,
+        cities=normalized_cities,
+        llm=llm,
+        headless=headless,
+        approval_requester=approval_requester,
+    )
+    if confirm and (approval is None or not approval.approved):
+        return _build_bounded_batch_result(
+            ok=False,
+            status=_approval_status(approval),
+            dry_run=False,
+            batch_run_id=normalized_batch_run_id,
+            target_count=normalized_target_count,
+            max_candidates=normalized_max_candidates,
+            candidate_timeout_ms=normalized_candidate_timeout_ms,
+            approval=approval,
+            progress=[],
+            applied_count=0,
+            examined_count=0,
+            failure_category=None,
+            stop_reason="approval_not_granted",
+        )
+
+    progress: list[BoundedBatchCandidateProgress] = []
+    applied_count = 0
+    examined_count = 0
+    token_validation_failures = 0
+
+    for candidate_index in range(1, normalized_max_candidates + 1):
+        if applied_count >= normalized_target_count:
+            break
+
+        candidate_run_id = f"{normalized_batch_run_id}-{candidate_index:03d}"
+        candidate_started_at = time.monotonic()
+        candidate_runner = _CandidateTimeoutRunner(
+            runner=runner,
+            timeout_ms=normalized_candidate_timeout_ms,
+        )
+        loop_result = run_single_job_application_loop(
+            repo_root=root,
+            node=node,
+            timeout_ms=min(timeout_ms, normalized_candidate_timeout_ms),
+            from_browser=True,
+            run_id=candidate_run_id,
+            token_file=token_file,
+            audit_file=audit_file,
+            recall_keywords=normalized_keywords,
+            cities=normalized_cities,
+            llm=llm,
+            confirm=confirm,
+            headless=headless,
+            now=now,
+            strategy_approval=approval,
+            runner=candidate_runner,
+        )
+        duration_ms = int((time.monotonic() - candidate_started_at) * 1000)
+        examined_count += 1
+
+        candidate_status = _candidate_status_from_loop(loop_result)
+        failure_category = _batch_failure_category_from_loop(loop_result)
+        stop_reason: str | None = None
+        batch_status: BatchStatus | None = None
+
+        if candidate_status == "applied":
+            applied_count += 1
+        elif _is_skipped_candidate(loop_result):
+            candidate_status = "skipped"
+        elif _has_reason_code(loop_result.trace.reasonCodes, "LOGIN_EXPIRED"):
+            candidate_status = "stopped"
+            failure_category = "login_expired"
+            stop_reason = "login_expired"
+            batch_status = "stopped"
+        elif _is_token_validation_failure(loop_result):
+            token_validation_failures += 1
+            candidate_status = "stopped"
+            failure_category = "token_validation_failed"
+            if token_validation_failures >= normalized_token_failure_limit:
+                stop_reason = "token_validation_failure_limit_reached"
+                batch_status = "stopped"
+        else:
+            candidate_status = (
+                "stopped"
+                if failure_category == "candidate_timeout"
+                else "failed"
+            )
+            stop_reason = (
+                "candidate_timeout"
+                if failure_category == "candidate_timeout"
+                else "unrecoverable_cli_error"
+            )
+            batch_status = (
+                "stopped"
+                if failure_category == "candidate_timeout"
+                else "failed"
+            )
+
+        candidate_progress = _build_candidate_progress(
+            loop_result=loop_result,
+            candidate_index=candidate_index,
+            run_id=candidate_run_id,
+            status=candidate_status,
+            applied_count=applied_count,
+            examined_count=examined_count,
+            duration_ms=duration_ms,
+            failure_category=failure_category,
+        )
+        progress.append(candidate_progress)
+
+        if batch_status is not None:
+            return _build_bounded_batch_result(
+                ok=False,
+                status=batch_status,
+                dry_run=not confirm,
+                batch_run_id=normalized_batch_run_id,
+                target_count=normalized_target_count,
+                max_candidates=normalized_max_candidates,
+                candidate_timeout_ms=normalized_candidate_timeout_ms,
+                approval=approval,
+                progress=progress,
+                applied_count=applied_count,
+                examined_count=examined_count,
+                failure_category=failure_category,
+                stop_reason=stop_reason,
+            )
+
+        if applied_count >= normalized_target_count:
+            return _build_bounded_batch_result(
+                ok=True,
+                status="completed",
+                dry_run=not confirm,
+                batch_run_id=normalized_batch_run_id,
+                target_count=normalized_target_count,
+                max_candidates=normalized_max_candidates,
+                candidate_timeout_ms=normalized_candidate_timeout_ms,
+                approval=approval,
+                progress=progress,
+                applied_count=applied_count,
+                examined_count=examined_count,
+            )
+
+        if examined_count >= normalized_max_candidates:
+            return _build_bounded_batch_result(
+                ok=False,
+                status="stopped",
+                dry_run=not confirm,
+                batch_run_id=normalized_batch_run_id,
+                target_count=normalized_target_count,
+                max_candidates=normalized_max_candidates,
+                candidate_timeout_ms=normalized_candidate_timeout_ms,
+                approval=approval,
+                progress=progress,
+                applied_count=applied_count,
+                examined_count=examined_count,
+                failure_category="max_candidates_reached",
+                stop_reason="max_candidates_reached",
+            )
+
+        relocation = _run_json_cli_tool(
+            tool_name="next-job",
+            command=_next_job_command(
+                node=node,
+                cli_path=cli_path,
+                confirm=confirm,
+                headless=headless,
+                recall_keywords=normalized_keywords,
+                cities=normalized_cities,
+            ),
+            cwd=root,
+            timeout_ms=min(timeout_ms, normalized_candidate_timeout_ms),
+            output_model=NextJobOutput,
+            runner=runner,
+        )
+        relocation_trace = _trace_from_tool_result(
+            relocation,
+            audit_file=audit_file,
+        )
+        candidate_progress.toolCalls.append(relocation_trace)
+        candidate_progress.reasonCodes = _dedupe(
+            [
+                *candidate_progress.reasonCodes,
+                *(code for code in [relocation_trace.reasonCode] if code),
+            ]
+        )
+        candidate_progress.auditRecordCount = sum(
+            call.auditRecordCount for call in candidate_progress.toolCalls
+        )
+
+        if not relocation.ok or not _next_job_allows_continuation(
+            relocation,
+            confirm=confirm,
+        ):
+            relocation_failure = (
+                "browser_relocation_failed"
+                if relocation.status != "timeout"
+                else "candidate_timeout"
+            )
+            if candidate_progress.status not in {"applied", "skipped"}:
+                candidate_progress.status = "stopped"
+            candidate_progress.failureCategory = relocation_failure
+            candidate_progress.reasonCodes = _dedupe(
+                [*candidate_progress.reasonCodes, relocation_failure.upper()]
+            )
+            return _build_bounded_batch_result(
+                ok=False,
+                status="stopped",
+                dry_run=not confirm,
+                batch_run_id=normalized_batch_run_id,
+                target_count=normalized_target_count,
+                max_candidates=normalized_max_candidates,
+                candidate_timeout_ms=normalized_candidate_timeout_ms,
+                approval=approval,
+                progress=progress,
+                applied_count=applied_count,
+                examined_count=examined_count,
+                failure_category=relocation_failure,
+                stop_reason=relocation_failure,
+            )
+
+    return _build_bounded_batch_result(
+        ok=applied_count >= normalized_target_count,
+        status="completed" if applied_count >= normalized_target_count else "stopped",
+        dry_run=not confirm,
+        batch_run_id=normalized_batch_run_id,
+        target_count=normalized_target_count,
+        max_candidates=normalized_max_candidates,
+        candidate_timeout_ms=normalized_candidate_timeout_ms,
+        approval=approval,
+        progress=progress,
+        applied_count=applied_count,
+        examined_count=examined_count,
+        failure_category=(
+            None if applied_count >= normalized_target_count else "max_candidates_reached"
+        ),
+        stop_reason=(
+            None if applied_count >= normalized_target_count else "max_candidates_reached"
+        ),
+    )
+
+
 def _run_json_cli_tool(
     *,
     tool_name: str,
@@ -432,6 +815,8 @@ def _run_json_cli_tool(
             timeoutMs=timeout_ms,
             stdout=_decode_timeout_text(err.stdout),
             stderr=_decode_timeout_text(err.stderr),
+            reasonCode=_reason_code_from_cli_text(_decode_timeout_text(err.stdout))
+            or _reason_code_from_cli_text(_decode_timeout_text(err.stderr)),
         )
 
     if completed.returncode != 0:
@@ -443,6 +828,8 @@ def _run_json_cli_tool(
             exitCode=completed.returncode,
             stdout=completed.stdout,
             stderr=completed.stderr,
+            reasonCode=_reason_code_from_cli_text(completed.stdout)
+            or _reason_code_from_cli_text(completed.stderr),
         )
 
     try:
@@ -457,6 +844,8 @@ def _run_json_cli_tool(
             stdout=completed.stdout,
             stderr=completed.stderr,
             parseError=str(err),
+            reasonCode=_reason_code_from_cli_text(completed.stdout)
+            or _reason_code_from_cli_text(completed.stderr),
         )
 
     try:
@@ -470,6 +859,8 @@ def _run_json_cli_tool(
             exitCode=completed.returncode,
             stdout=completed.stdout,
             stderr=completed.stderr,
+            reasonCode=_reason_code_from_cli_text(completed.stdout)
+            or _reason_code_from_cli_text(completed.stderr),
             validationErrors=[
                 ValidationFailure.model_validate(error)
                 for error in err.errors(include_url=False)
@@ -485,6 +876,7 @@ def _run_json_cli_tool(
         stdout=completed.stdout,
         stderr=completed.stderr,
         output=output,
+        reasonCode=_output_reason_code(output),
     )
 
 
@@ -500,6 +892,35 @@ def _approval_for_single_job_loop(
         return None
     request = build_confirmed_single_job_loop_approval_request(
         source=source,
+        llm=llm,
+        headless=headless,
+    )
+    if approval_requester is None:
+        return missing_approval_trace(request)
+    decision = normalize_approval_decision(approval_requester(request))
+    return approval_trace_from_decision(request=request, decision=decision)
+
+
+def _approval_for_bounded_tokened_batch(
+    *,
+    confirm: bool,
+    target_count: int,
+    max_candidates: int,
+    candidate_timeout_ms: int,
+    recall_keywords: Sequence[str],
+    cities: Sequence[str],
+    llm: bool,
+    headless: bool,
+    approval_requester: ApprovalRequester | None,
+) -> ApprovalTraceMetadata | None:
+    if not confirm:
+        return None
+    request = build_confirmed_bounded_tokened_batch_approval_request(
+        target_count=target_count,
+        max_candidates=max_candidates,
+        candidate_timeout_ms=candidate_timeout_ms,
+        recall_keywords=recall_keywords,
+        cities=cities,
         llm=llm,
         headless=headless,
     )
@@ -647,6 +1068,27 @@ def _authorized_action_command(
     return command
 
 
+def _next_job_command(
+    *,
+    node: str,
+    cli_path: Path,
+    confirm: bool,
+    headless: bool,
+    recall_keywords: Sequence[str],
+    cities: Sequence[str],
+) -> list[str]:
+    command = [node, str(cli_path), "next-job"]
+    if confirm:
+        command.append("--confirm")
+    if headless:
+        command.append("--headless")
+    if recall_keywords:
+        command.extend(["--recall-keyword", recall_keywords[0]])
+    if cities:
+        command.extend(["--city", cities[0]])
+    return command
+
+
 def _stop_after_failure(
     *,
     dry_run: bool,
@@ -754,6 +1196,178 @@ def _build_recovery(trace: ApplicationLoopTrace) -> ApplicationLoopRecovery:
     )
 
 
+def _build_candidate_progress(
+    *,
+    loop_result: ApplicationLoopResult,
+    candidate_index: int,
+    run_id: str,
+    status: str,
+    applied_count: int,
+    examined_count: int,
+    duration_ms: int | None,
+    failure_category: str | None,
+) -> BoundedBatchCandidateProgress:
+    tool_calls = list(loop_result.trace.toolCalls)
+    reason_codes = _dedupe(
+        [
+            *loop_result.trace.reasonCodes,
+            *(code for code in [failure_category] if code),
+        ]
+    )
+    return BoundedBatchCandidateProgress(
+        candidateIndex=candidate_index,
+        runId=loop_result.runId or run_id,
+        status=status,
+        dryRun=loop_result.dryRun,
+        jobId=loop_result.jobId or loop_result.trace.currentJobId,
+        decisionType=_first_decision_type(tool_calls),
+        appliedCount=applied_count,
+        examinedCount=examined_count,
+        durationMs=duration_ms,
+        auditRecordCount=sum(call.auditRecordCount for call in tool_calls),
+        toolCalls=tool_calls,
+        failureCategory=failure_category,
+        reasonCodes=[
+            code.upper() if code.islower() else code
+            for code in reason_codes
+        ],
+    )
+
+
+def _build_bounded_batch_result(
+    *,
+    ok: bool,
+    status: BatchStatus,
+    dry_run: bool,
+    batch_run_id: str,
+    target_count: int,
+    max_candidates: int,
+    candidate_timeout_ms: int,
+    approval: ApprovalTraceMetadata | None,
+    progress: list[BoundedBatchCandidateProgress],
+    applied_count: int,
+    examined_count: int,
+    failure_category: str | None = None,
+    stop_reason: str | None = None,
+) -> BoundedBatchResult:
+    current = progress[-1] if progress else None
+    reason_codes = _dedupe(
+        [
+            *(code for candidate in progress for code in candidate.reasonCodes),
+            *(code for code in [failure_category, stop_reason] if code),
+        ]
+    )
+    if approval and approval.reasonCode:
+        reason_codes = _dedupe([*reason_codes, approval.reasonCode])
+    reason_codes = [
+        code.upper() if code.islower() else code
+        for code in reason_codes
+    ]
+    trace = BoundedBatchTrace(
+        status=status,
+        dryRun=dry_run,
+        batchRunId=batch_run_id,
+        targetCount=target_count,
+        maxCandidates=max_candidates,
+        candidateTimeoutMs=candidate_timeout_ms,
+        approval=approval,
+        candidates=progress,
+        appliedCount=applied_count,
+        examinedCount=examined_count,
+        currentCandidateIndex=current.candidateIndex if current else None,
+        currentRunId=current.runId if current else None,
+        currentJobId=current.jobId if current else None,
+        failureCategory=failure_category,
+        reasonCodes=reason_codes,
+        stopReason=stop_reason,
+    )
+    recovery = _build_bounded_batch_recovery(trace)
+    return BoundedBatchResult(
+        ok=ok,
+        status=status,
+        dryRun=dry_run,
+        batchRunId=batch_run_id,
+        targetCount=target_count,
+        maxCandidates=max_candidates,
+        candidateTimeoutMs=candidate_timeout_ms,
+        examinedCount=examined_count,
+        appliedCount=applied_count,
+        progress=progress,
+        approval=approval,
+        trace=trace,
+        recovery=recovery,
+        failureCategory=failure_category,
+        stopReason=stop_reason,
+    )
+
+
+def _build_bounded_batch_recovery(trace: BoundedBatchTrace) -> BoundedBatchRecovery:
+    completed = [candidate for candidate in trace.candidates if candidate.status == "applied"]
+    failed = [
+        candidate
+        for candidate in trace.candidates
+        if candidate.status in {"failed", "stopped"} and candidate.failureCategory
+    ]
+    current = trace.candidates[-1] if trace.candidates else None
+    stopped_at = (
+        BoundedBatchRecoveryLocation(
+            candidateIndex=current.candidateIndex,
+            runId=current.runId,
+            jobId=current.jobId,
+            reasonCodes=current.reasonCodes,
+        )
+        if current and trace.status != "completed"
+        else None
+    )
+
+    if trace.status == "completed":
+        recommendation = "safe_stop"
+        safe_options = ["safe_stop"]
+        explanation = "Bounded tokened batch reached its configured target count."
+    elif trace.status.startswith("approval_"):
+        recommendation = "safe_stop"
+        safe_options = ["safe_stop"]
+        explanation = "Batch stopped before CLI invocation because sidecar approval was not granted."
+    elif trace.failureCategory in {"stdout_parse_error", "stdout_validation_error"}:
+        recommendation = "inspect_cli_contract"
+        safe_options = ["stop_and_inspect_cli_stdout"]
+        explanation = "CLI output could not be trusted; inspect stdout before rerunning."
+    elif trace.failureCategory in {
+        "candidate_timeout",
+        "login_expired",
+        "token_validation_failed",
+        "browser_relocation_failed",
+        "max_candidates_reached",
+    }:
+        recommendation = "safe_stop"
+        safe_options = [
+            "stop_and_inspect_trace",
+            "rerun_dry_run_from_cli_after_revalidation",
+        ]
+        explanation = "Batch stopped at a configured or safety boundary; fresh confirmation and CLI revalidation are required before real actions continue."
+    else:
+        recommendation = "rerun_from_cli_after_review"
+        safe_options = [
+            "stop_and_inspect_trace",
+            "rerun_dry_run_from_cli_after_revalidation",
+        ]
+        explanation = "Batch stopped safely; review token, audit, and CLI output before any new real action."
+
+    return BoundedBatchRecovery(
+        recommendation=recommendation,
+        safeOptions=safe_options,
+        canAutomaticallyContinueRealActions=False,
+        stoppedAt=stopped_at,
+        completedRunIds=[candidate.runId for candidate in completed],
+        completedJobIds=[candidate.jobId for candidate in completed if candidate.jobId],
+        failedRunIds=[candidate.runId for candidate in failed],
+        failedJobIds=[candidate.jobId for candidate in failed if candidate.jobId],
+        failureCategory=trace.failureCategory,
+        reasonCodes=trace.reasonCodes,
+        explanation=explanation,
+    )
+
+
 def _trace_from_tool_result(
     result: FineGrainedCliToolResult,
     *,
@@ -769,7 +1383,8 @@ def _trace_from_tool_result(
         runId=run_id,
         jobId=job_id,
         action=_output_action(output),
-        reasonCode=_output_reason_code(output),
+        decisionType=_output_decision_type(output),
+        reasonCode=_result_reason_code(result),
         auditRecordCount=_count_audit_records(audit_file, run_id),
         failureCategory=_failure_category(result),
     )
@@ -803,6 +1418,7 @@ def _redacted_command_tokens(command: list[str]) -> list[str]:
             "issue",
             "inspect",
             "authorized-action",
+            "next-job",
         }
     )
     return redacted
@@ -823,6 +1439,7 @@ def _summarize_command(command: list[str]) -> ToolCommandSummary | None:
                     "evaluate-job",
                     "authorization-token",
                     "authorized-action",
+                    "next-job",
                 }
             ),
             None,
@@ -843,6 +1460,64 @@ def _failure_category(result: FineGrainedCliToolResult) -> str | None:
     if result.status == "cli_error":
         return "cli_reported_error"
     return None
+
+
+def _batch_failure_category_from_loop(
+    loop_result: ApplicationLoopResult,
+) -> str | None:
+    if any(call.failureCategory == "subprocess_timeout" for call in loop_result.trace.toolCalls):
+        return "candidate_timeout"
+    return loop_result.failureCategory
+
+
+def _candidate_status_from_loop(
+    loop_result: ApplicationLoopResult,
+) -> Literal["applied", "skipped", "failed", "stopped"]:
+    if loop_result.ok and loop_result.status == "completed":
+        return "applied"
+    if _is_skipped_candidate(loop_result):
+        return "skipped"
+    if loop_result.status == "stopped":
+        return "stopped"
+    return "failed"
+
+
+def _is_skipped_candidate(loop_result: ApplicationLoopResult) -> bool:
+    if loop_result.failureCategory != "authorization_not_issued":
+        return False
+    return bool(
+        _has_reason_code(
+            loop_result.trace.reasonCodes,
+            "FINAL_DECISION_NOT_APPLY",
+            "RULE_BOUNDARY_DENIED",
+            "AUTHORIZATION_NOT_GRANTED_BY_LLM",
+            "LLM_DECISION_INCOMPLETE",
+            "AUTHORIZATION_NOT_ISSUED",
+        )
+    )
+
+
+def _is_token_validation_failure(loop_result: ApplicationLoopResult) -> bool:
+    return loop_result.failureCategory == "authorization_rejected" or bool(
+        _has_reason_code(
+            loop_result.trace.reasonCodes,
+            "TOKEN_EXPIRED",
+            "TOKEN_CONSUMED",
+            "TOKEN_NOT_FOUND",
+            "TOKEN_MALFORMED",
+            "TOKEN_UNUSABLE",
+            "ACTION_NOT_ALLOWED",
+            "AUTHORIZATION_REJECTED",
+        )
+    )
+
+
+def _has_reason_code(
+    values: Sequence[str],
+    *needles: str,
+) -> bool:
+    normalized = {value.upper() for value in values if value}
+    return any(needle.upper() in normalized for needle in needles)
 
 
 def _approval_status(approval: ApprovalTraceMetadata | None) -> str:
@@ -886,9 +1561,49 @@ def _output_action(output: Any) -> str | None:
     return None
 
 
+def _output_decision_type(output: Any) -> str | None:
+    if isinstance(output, EvaluateJobOutput):
+        value = output.finalDecision.get("decision")
+        return str(value) if value else None
+    if isinstance(output, AuthorizedActionOutput) and output.ok:
+        return "apply"
+    return None
+
+
 def _output_reason_code(output: Any) -> str | None:
     reason_code = getattr(output, "reasonCode", None)
-    return str(reason_code) if reason_code else None
+    if reason_code:
+        return str(reason_code)
+    if isinstance(output, NextJobOutput) and isinstance(output.result, dict):
+        return _safe_reason_code(output.result.get("reason"))
+    return None
+
+
+def _result_reason_code(result: FineGrainedCliToolResult) -> str | None:
+    return _output_reason_code(result.output) or result.reasonCode
+
+
+def _first_decision_type(tool_calls: Sequence[FineGrainedToolTrace]) -> str | None:
+    for call in tool_calls:
+        if call.decisionType:
+            return call.decisionType
+    return None
+
+
+def _next_job_allows_continuation(
+    result: FineGrainedCliToolResult,
+    *,
+    confirm: bool,
+) -> bool:
+    output = result.output
+    if not isinstance(output, NextJobOutput) or not isinstance(output.result, dict):
+        return False
+    if confirm:
+        return output.result.get("moved") is True
+    return (
+        output.result.get("wouldMove") is True
+        or output.result.get("moved") is True
+    )
 
 
 def _job_id_from_profile(profile: dict[str, Any] | None) -> str | None:
@@ -935,6 +1650,84 @@ def _decode_timeout_text(value: str | bytes | None) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return value
+
+
+def _reason_code_from_cli_text(value: str | bytes | None) -> str | None:
+    text = _decode_timeout_text(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        for key in ("reasonCode", "error", "reason"):
+            safe_code = _safe_reason_code(parsed.get(key))
+            if safe_code:
+                return safe_code
+    return _safe_reason_code(text)
+
+
+def _safe_reason_code(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    import re
+
+    match = re.search(r"\b[A-Z][A-Z0-9_]{2,80}\b", text)
+    if not match:
+        return None
+    code = match.group(0)
+    safe_prefixes = (
+        "ACTION_",
+        "APPROVAL_",
+        "AUTHORIZATION_",
+        "BROWSER_",
+        "CANDIDATE_",
+        "DRY_RUN",
+        "FINAL_",
+        "HUMAN_",
+        "JOB_",
+        "LLM_",
+        "LOGIN_",
+        "NO_",
+        "RULE_",
+        "START_",
+        "TOKEN_",
+    )
+    return code if code.startswith(safe_prefixes) else None
+
+
+def _positive_int(value: int | None, fallback: int) -> int:
+    if isinstance(value, bool):
+        return fallback
+    if isinstance(value, int) and value > 0:
+        return value
+    return fallback
+
+
+class _CandidateTimeoutRunner:
+    def __init__(
+        self,
+        *,
+        runner: CompletedRunner,
+        timeout_ms: int,
+    ) -> None:
+        self.runner = runner
+        self.deadline = time.monotonic() + (timeout_ms / 1000)
+
+    def __call__(self, command, **kwargs):
+        remaining_seconds = self.deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            raise subprocess.TimeoutExpired(cmd=command, timeout=0)
+        requested_timeout = kwargs.get("timeout")
+        if requested_timeout is None:
+            kwargs["timeout"] = remaining_seconds
+        else:
+            kwargs["timeout"] = min(float(requested_timeout), remaining_seconds)
+        return self.runner(command, **kwargs)
 
 
 def _dedupe(values) -> list[str]:

@@ -5,7 +5,10 @@ import json
 import sys
 from pathlib import Path
 
-from .application_loop import run_single_job_application_loop
+from .application_loop import (
+    run_bounded_tokened_application_batch,
+    run_single_job_application_loop,
+)
 from .approval import make_terminal_approval_requester
 from .observability import build_observability_report
 from .schemas import CliToolResult
@@ -37,6 +40,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run one token-gated fine-grained application loop through CLI tools.",
     )
     _add_single_job_loop_arguments(single_job_loop)
+
+    tokened_batch = subparsers.add_parser(
+        "supervise-tokened-batch",
+        help="Run a bounded batch through token-gated fine-grained CLI tools.",
+    )
+    _add_tokened_batch_arguments(tokened_batch)
 
     return parser
 
@@ -114,6 +123,40 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write("\n")
         return 0 if result.ok else 1
 
+    if args.command == "supervise-tokened-batch":
+        result = run_bounded_tokened_application_batch(
+            repo_root=args.repo_root,
+            node=args.node,
+            timeout_ms=args.timeout_ms,
+            batch_run_id=args.run_id,
+            token_file=args.token_file,
+            audit_file=args.audit_file,
+            target_count=args.target_count,
+            max_candidates=args.max_candidates,
+            candidate_timeout_ms=args.candidate_timeout_ms,
+            max_token_validation_failures=args.max_token_validation_failures,
+            recall_keywords=args.recall_keyword,
+            cities=args.city,
+            llm=args.llm,
+            confirm=args.confirm,
+            headless=args.headless,
+            now=args.now,
+            approval_requester=(
+                make_terminal_approval_requester(timeout_ms=args.approval_timeout_ms)
+                if args.confirm
+                else None
+            ),
+        )
+        sys.stdout.write(
+            json.dumps(
+                result.model_dump(exclude_none=True),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        sys.stdout.write("\n")
+        return 0 if result.ok else 1
+
     parser.error(f"unknown command: {args.command}")
     return 2
 
@@ -142,6 +185,26 @@ def _add_single_job_loop_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--run-id")
     parser.add_argument("--token-file", type=Path)
     parser.add_argument("--audit-file", type=Path)
+    parser.add_argument("--recall-keyword", action="append", default=[])
+    parser.add_argument("--city", action="append", default=[])
+    parser.add_argument("--llm", action="store_true")
+    parser.add_argument("--confirm", action="store_true")
+    parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--now")
+    parser.add_argument("--approval-timeout-ms", type=int, default=60_000)
+
+
+def _add_tokened_batch_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--repo-root", type=Path, default=_default_repo_root())
+    parser.add_argument("--node", default="node")
+    parser.add_argument("--timeout-ms", type=int, default=300_000)
+    parser.add_argument("--run-id")
+    parser.add_argument("--token-file", type=Path)
+    parser.add_argument("--audit-file", type=Path)
+    parser.add_argument("--target-count", type=int, default=1)
+    parser.add_argument("--max-candidates", type=int)
+    parser.add_argument("--candidate-timeout-ms", type=int)
+    parser.add_argument("--max-token-validation-failures", type=int, default=1)
     parser.add_argument("--recall-keyword", action="append", default=[])
     parser.add_argument("--city", action="append", default=[])
     parser.add_argument("--llm", action="store_true")

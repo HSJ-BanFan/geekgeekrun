@@ -50,6 +50,41 @@ def build_confirmed_batch_approval_request(
     )
 
 
+def build_confirmed_bounded_tokened_batch_approval_request(
+    *,
+    target_count: int,
+    max_candidates: int | None,
+    candidate_timeout_ms: int | None,
+    recall_keywords: Sequence[str],
+    cities: Sequence[str],
+    llm: bool,
+    headless: bool,
+) -> ApprovalRequest:
+    metadata = ApprovalRequestMetadata(
+        command="bounded-tokened-batch",
+        targetCount=target_count,
+        maxCandidates=max_candidates,
+        candidateTimeoutMs=candidate_timeout_ms,
+        recallKeywordCount=len(recall_keywords),
+        cityCount=len(cities),
+        llm=llm,
+        headless=headless,
+        commandOptions=_redacted_command_options(
+            max_candidates=max_candidates,
+            candidate_timeout_ms=candidate_timeout_ms,
+            recall_keywords=recall_keywords,
+            cities=cities,
+            llm=llm,
+            headless=headless,
+        ),
+    )
+    return ApprovalRequest(
+        kind="confirmed_bounded_tokened_batch",
+        prompt=_format_confirmed_bounded_tokened_batch_prompt(metadata),
+        metadata=metadata,
+    )
+
+
 def build_confirmed_single_job_loop_approval_request(
     *,
     source: str,
@@ -176,6 +211,24 @@ def _format_confirmed_batch_prompt(metadata: ApprovalRequestMetadata) -> str:
     lines = [
         "Approve supervised confirmed run-batch?",
         "This permits the sidecar to invoke the CLI with --confirm.",
+        f"targetCount: {metadata.targetCount}",
+        f"maxCandidates: {_display_optional_int(metadata.maxCandidates)}",
+        f"candidateTimeoutMs: {_display_optional_int(metadata.candidateTimeoutMs)}",
+        f"recallKeywordCount: {metadata.recallKeywordCount}",
+        f"cityCount: {metadata.cityCount}",
+        f"llm: {_display_bool(metadata.llm)}",
+        f"headless: {_display_bool(metadata.headless)}",
+        "Sensitive originals are redacted from this prompt.",
+    ]
+    return "\n".join(lines)
+
+
+def _format_confirmed_bounded_tokened_batch_prompt(
+    metadata: ApprovalRequestMetadata,
+) -> str:
+    lines = [
+        "Approve supervised confirmed bounded tokened batch?",
+        "This permits the sidecar to invoke token-gated CLI actions with --confirm.",
         f"targetCount: {metadata.targetCount}",
         f"maxCandidates: {_display_optional_int(metadata.maxCandidates)}",
         f"candidateTimeoutMs: {_display_optional_int(metadata.candidateTimeoutMs)}",

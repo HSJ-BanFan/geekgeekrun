@@ -52,7 +52,7 @@ ApprovalOutcome = Literal["approved", "denied", "timeout", "cancelled", "missing
 
 
 class ApprovalRequestMetadata(FlexibleCliModel):
-    command: Literal["run-batch", "single-job-loop"] = "run-batch"
+    command: Literal["run-batch", "single-job-loop", "bounded-tokened-batch"] = "run-batch"
     mode: Literal["confirmed"] = "confirmed"
     realActions: bool = True
     confirmRequired: bool = True
@@ -78,7 +78,11 @@ class ApprovalRequestMetadata(FlexibleCliModel):
 
 
 class ApprovalRequest(FlexibleCliModel):
-    kind: Literal["confirmed_batch", "confirmed_single_job_loop"] = "confirmed_batch"
+    kind: Literal[
+        "confirmed_batch",
+        "confirmed_single_job_loop",
+        "confirmed_bounded_tokened_batch",
+    ] = "confirmed_batch"
     prompt: str
     metadata: ApprovalRequestMetadata
 
