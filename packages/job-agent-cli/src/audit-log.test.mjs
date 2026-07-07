@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { test } from 'node:test'
 
-import { buildAuditRecord, sanitizeForAudit } from './audit-log.mjs'
+import { appendAuditLog, buildAuditRecord, sanitizeForAudit } from './audit-log.mjs'
 
 const longJd = [
   'Responsibilities: build Python APIs and AI agent workflows.',
@@ -54,4 +57,60 @@ test('sanitizeForAudit compresses nested JD text in direct audit events', () => 
   assert.equal(typeof sanitized.profile.jobDescription, 'object')
   assert.equal(JSON.stringify(sanitized).includes('RAW_JD_TAIL_SHOULD_NOT_APPEAR'), false)
   assert.ok(sanitized.ruleEvaluation.attentionTechnologyAssessment.evidence[0].segment.length <= 160)
+})
+
+test('appendAuditLog writes Greeting Plan metadata without full preset greeting text', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ggr-greeting-plan-audit-'))
+  const auditFile = path.join(tempDir, 'audit.jsonl')
+  const greetingMessage = '您好，我想了解这个岗位。FULL_GREETING_CANARY_0002 C:\\Users\\Private\\resume.png API_KEY_SECRET_0002'
+
+  try {
+    const entry = buildAuditRecord({
+      runId: 'run-greeting-plan-1',
+      command: 'run-once',
+      dryRun: true,
+      profile: {
+        title: 'Python Backend Intern',
+        company: 'Example Co',
+        jd: '负责 Python API 开发。',
+      },
+      ruleEvaluation: {
+        decision: 'apply',
+        greetingTemplate: 'AI Agent Template',
+        greetingMessage,
+        greetingPlan: {
+          source: 'preset',
+          selectedTemplate: {
+            type: 'rule',
+            rule: 'AI Agent Template',
+            name: 'AI Agent Template',
+            pattern: 'Python|FastAPI',
+          },
+          fallbackReason: null,
+          summary: 'Preset greeting selected from AI Agent Template; 70 characters.',
+          characterCount: Array.from(greetingMessage).length,
+          safetyStatus: {
+            auditSafe: true,
+            deliveryTextAvailable: true,
+            originalMessageSensitive: true,
+            reasons: ['sensitive_original_omitted_from_plan'],
+          },
+        },
+      },
+      finalDecision: { decision: 'apply' },
+    })
+
+    const result = appendAuditLog(entry, { auditFile })
+    const persisted = fs.readFileSync(auditFile, 'utf8')
+
+    assert.equal(result.record.ruleEvaluation.greetingPlan.source, 'preset')
+    assert.equal(result.record.ruleEvaluation.greetingPlan.selectedTemplate.rule, 'AI Agent Template')
+    assert.equal(result.record.ruleEvaluation.greetingMessage, '[REDACTED]')
+    assert.equal(persisted.includes(greetingMessage), false)
+    assert.equal(persisted.includes('FULL_GREETING_CANARY_0002'), false)
+    assert.equal(persisted.includes('C:\\Users\\Private\\resume.png'), false)
+    assert.equal(persisted.includes('API_KEY_SECRET_0002'), false)
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
 })

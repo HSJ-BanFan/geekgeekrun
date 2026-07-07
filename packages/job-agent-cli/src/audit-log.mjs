@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { getAuditLogPath } from './config.mjs'
+import { redactSensitiveFragments } from './sensitive-text.mjs'
 
 const redactedValue = '[REDACTED]'
 const jdSummaryMaxLength = 240
@@ -111,6 +112,10 @@ export function sanitizeForAudit (value, seen = new WeakSet()) {
     }
     if (typeof item === 'string' && isEvidenceSnippetKey(key)) {
       output[key] = clipAuditText(item, jdEvidenceSnippetMaxLength)
+      continue
+    }
+    if (typeof item === 'string') {
+      output[key] = redactSensitiveFragments(item)
       continue
     }
     output[key] = sanitizeForAudit(item, seen)

@@ -5,7 +5,7 @@ import util from 'node:util'
 import minimist from 'minimist'
 import { loadRuntimeConfig, getEnabledRecallKeywords, getGreetingRules, getResumeImagePath } from '../src/config.mjs'
 import { normalizeJobProfile } from '../src/job-profile.mjs'
-import { evaluateJobWithRules, selectGreeting } from '../src/policy.mjs'
+import { evaluateJobWithRules, selectGreetingWithPlan } from '../src/policy.mjs'
 import { evaluateJobWithLlm } from '../src/llm-evaluator.mjs'
 import { resolveFinalDecision } from '../src/final-decision.mjs'
 import { buildCandidateProfile, summarizeCandidateProfile } from '../src/candidate-profile.mjs'
@@ -136,14 +136,14 @@ async function evaluateJob (argv) {
 async function sendGreeting (argv) {
   const profile = await readJobFromArgs(argv)
   const { boss } = loadRuntimeConfig()
-  const greeting = selectGreeting(profile, boss)
+  const { greeting, greetingPlan } = selectGreetingWithPlan(profile, boss)
   const result = await sendGreetingToMostRecentChat({
     message: greeting.message,
     imagePath: getResumeImagePath(boss),
     confirm: argv.confirm,
     headless: argv.headless,
   })
-  return { ok: true, command: 'send-greeting', greeting, result }
+  return { ok: true, command: 'send-greeting', greeting, greetingPlan, result }
 }
 
 async function startChat (argv) {

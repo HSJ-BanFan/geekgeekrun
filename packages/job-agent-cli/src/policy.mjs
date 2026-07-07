@@ -1,4 +1,5 @@
 import { getDefaultGreeting, getEnabledRecallKeywords, getGreetingRules, getResumeImagePath } from './config.mjs'
+import { buildPresetGreetingPlan } from './greeting-plan.mjs'
 import { jobText } from './job-profile.mjs'
 
 const hardRejectPattern = /信息录入|录入员|纯兼职|运营跟播|跟播|内容审核|审核专员|AI内容|内容测评|文案撰写|销售|客服|主播|带货|推广|运营助理|数据标注|标注员|AI训练师|数据采集员|数据清洗员/i
@@ -62,16 +63,44 @@ const categoryRules = [
 ]
 
 export function selectGreeting (job, bossConfig) {
+  return selectGreetingWithPlan(job, bossConfig).greeting
+}
+
+export function selectGreetingPlan (job, bossConfig) {
+  return selectGreetingWithPlan(job, bossConfig).greetingPlan
+}
+
+export function selectGreetingWithPlan (job, bossConfig) {
+  const selection = selectPresetGreeting(job, bossConfig)
+  return {
+    greeting: { rule: selection.rule, message: selection.message },
+    greetingPlan: buildPresetGreetingPlan(selection),
+  }
+}
+
+function selectPresetGreeting (job, bossConfig) {
   const text = jobText(job)
   for (const rule of getGreetingRules(bossConfig)) {
     try {
       if (isJapaneseGreetingRule(rule) && !hasJapaneseSignal(text)) continue
       if (new RegExp(rule.pattern, 'im').test(text)) {
-        return { rule: rule.name || rule.pattern, message: rule.message }
+        return {
+          type: 'rule',
+          rule: rule.name || rule.pattern,
+          name: rule.name,
+          pattern: rule.pattern,
+          message: rule.message,
+        }
       }
     } catch {}
   }
-  return { rule: 'default', message: getDefaultGreeting(bossConfig) }
+  return {
+    type: 'default',
+    rule: 'default',
+    name: 'default',
+    pattern: '',
+    message: getDefaultGreeting(bossConfig),
+  }
 }
 
 export function evaluateJobWithRules (job, bossConfig, candidateProfile = null) {
@@ -84,7 +113,8 @@ export function evaluateJobWithRules (job, bossConfig, candidateProfile = null) 
   const profileFit = matchCandidateProfile(job, candidateProfile)
   const jdMatches = matchJdRequirements(text, category)
   const remoteFit = hasRemoteSignal(text)
-  const greeting = selectGreeting(job, bossConfig)
+  const greeting = selectPresetGreeting(job, bossConfig)
+  const greetingPlan = buildPresetGreetingPlan(greeting)
   const requiresLlmFinalDecision = Boolean(candidateProfile?.requiresLlmForFinalDecision)
   const configuredRegexMatched = Boolean(configuredRegexResult.configured && configuredRegexResult.pass)
   const hasTargetFit = Boolean(
@@ -148,13 +178,14 @@ export function evaluateJobWithRules (job, bossConfig, candidateProfile = null) 
     attentionTechnologyAssessment,
     greetingTemplate: greeting.rule,
     greetingMessage: greeting.message,
+    greetingPlan,
     resumeImagePath: getResumeImagePath(bossConfig),
     reasons,
-    presetTasks: buildPresetTasks({ decision, greeting, bossConfig, attentionTechnologyAssessment, requiresLlmFinalDecision }),
+    presetTasks: buildPresetTasks({ decision, greeting, greetingPlan, bossConfig, attentionTechnologyAssessment, requiresLlmFinalDecision }),
   }
 }
 
-function buildPresetTasks ({ decision, greeting, bossConfig, attentionTechnologyAssessment, requiresLlmFinalDecision }) {
+function buildPresetTasks ({ decision, greeting, greetingPlan, bossConfig, attentionTechnologyAssessment, requiresLlmFinalDecision }) {
   if (decision === 'skip') {
     return [{ type: 'mark_not_suit', dryRun: true }]
   }
@@ -180,7 +211,7 @@ function buildPresetTasks ({ decision, greeting, bossConfig, attentionTechnology
   }
   const tasks = [
     { type: 'start_chat', dryRun: true },
-    { type: 'send_greeting', template: greeting.rule, dryRun: true },
+    { type: 'send_greeting', template: greeting.rule, greetingPlan, dryRun: true },
   ]
   if (getResumeImagePath(bossConfig)) {
     tasks.push({ type: 'upload_resume_image', dryRun: true })
