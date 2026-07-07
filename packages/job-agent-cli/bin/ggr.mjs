@@ -9,6 +9,7 @@ import { evaluateJobWithRules, selectGreeting } from '../src/policy.mjs'
 import { evaluateJobWithLlm } from '../src/llm-evaluator.mjs'
 import { resolveFinalDecision } from '../src/final-decision.mjs'
 import { buildCandidateProfile, summarizeCandidateProfile } from '../src/candidate-profile.mjs'
+import { buildOrRefreshCapabilityProfile, inspectCapabilityProfileCache } from '../src/capability-profile.mjs'
 import {
   extractCurrentJobFromBrowser,
   moveToNextJob,
@@ -19,7 +20,7 @@ import {
 import { appendAuditLog, buildAuditRecord, createRunId } from '../src/audit-log.mjs'
 
 const argv = minimist(process.argv.slice(2), {
-  boolean: ['from-browser', 'headless', 'llm', 'confirm'],
+  boolean: ['from-browser', 'headless', 'llm', 'confirm', 'refresh'],
   string: [
     'job',
     'title',
@@ -52,6 +53,8 @@ async function dispatch (command, argv) {
   switch (command) {
     case 'snapshot':
       return snapshot()
+    case 'capability-profile':
+      return capabilityProfile(argv)
     case 'extract-job':
       return extractJob(argv)
     case 'evaluate-job':
@@ -74,11 +77,13 @@ async function dispatch (command, argv) {
 function snapshot () {
   const { boss, llm, storageFilePath } = loadRuntimeConfig()
   const candidateProfile = buildCandidateProfile(boss)
+  const capabilityProfile = inspectCapabilityProfileCache({ bossConfig: boss, candidateProfile })
   return {
     ok: true,
     command: 'snapshot',
     storageFilePath,
     candidateProfile: summarizeCandidateProfile(candidateProfile),
+    capabilityProfile,
     recallKeywordCount: getEnabledRecallKeywords(boss).length,
     recallKeywords: getEnabledRecallKeywords(boss),
     staticConditionCount: boss.staticCombineRecommendJobFilterConditions?.length ?? 0,
@@ -87,6 +92,22 @@ function snapshot () {
     greetingRules: getGreetingRules(boss).map(rule => ({ name: rule.name, pattern: rule.pattern })),
     resumeImageConfigured: Boolean(getResumeImagePath(boss)),
     llmConfigured: hasLlmConfig(llm),
+  }
+}
+
+async function capabilityProfile (argv) {
+  const { boss, llm } = loadRuntimeConfig()
+  const candidateProfile = buildCandidateProfile(boss)
+  const result = await buildOrRefreshCapabilityProfile({
+    bossConfig: boss,
+    candidateProfile,
+    llmConfig: llm,
+    forceRefresh: argv.refresh,
+  })
+  if (!result.ok) process.exitCode = 1
+  return {
+    ...result,
+    command: 'capability-profile',
   }
 }
 
@@ -344,6 +365,7 @@ function usage () {
     ok: true,
     commands: [
       'ggr snapshot',
+      'ggr capability-profile [--refresh]',
       'ggr extract-job --job job.json',
       'ggr extract-job --from-browser [--recall-keyword value] [--city code]',
       'ggr evaluate-job --job job.json [--llm]',

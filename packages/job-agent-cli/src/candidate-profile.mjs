@@ -1,5 +1,6 @@
 import { readConfigFile } from '@geekgeekrun/geek-auto-start-chat-with-boss/runtime-file-utils.mjs'
 import { getEnabledRecallKeywords, getGreetingRules } from './config.mjs'
+import { isSensitiveProfileSignal, redactSensitiveFragments } from './sensitive-text.mjs'
 
 const genericIntentTokens = new Set([
   '实习',
@@ -29,8 +30,7 @@ const genericIntentTokens = new Set([
 
 const maxSignalCount = 120
 
-export function buildCandidateProfile (bossConfig = {}) {
-  const resume = readPrimaryResume()
+export function buildCandidateProfile (bossConfig = {}, { resume = readPrimaryResume() } = {}) {
   const recallKeywords = getEnabledRecallKeywords(bossConfig)
   const titleRegex = String(bossConfig.expectJobNameRegExpStr ?? bossConfig.expectJobRegExpStr ?? '').trim()
   const typeRegex = String(bossConfig.expectJobTypeRegExpStr ?? '').trim()
@@ -65,16 +65,16 @@ export function buildCandidateProfile (bossConfig = {}) {
 export function summarizeCandidateProfile (candidateProfile) {
   return {
     resumeAvailable: Boolean(candidateProfile?.resumeAvailable),
-    expectedJob: candidateProfile?.expectedJob ?? '',
-    workYearDesc: candidateProfile?.workYearDesc ?? '',
+    expectedJob: sanitizeSummaryText(candidateProfile?.expectedJob ?? ''),
+    workYearDesc: sanitizeSummaryText(candidateProfile?.workYearDesc ?? ''),
     recallKeywordCount: candidateProfile?.recallKeywords?.length ?? 0,
     recallKeywords: candidateProfile?.recallKeywords ?? [],
-    titleRegex: candidateProfile?.titleRegex ?? '',
-    typeRegex: candidateProfile?.typeRegex ?? '',
-    descRegex: candidateProfile?.descRegex ?? '',
-    intentSignals: candidateProfile?.intentSignals ?? [],
+    titleRegex: sanitizeSummaryText(candidateProfile?.titleRegex ?? ''),
+    typeRegex: sanitizeSummaryText(candidateProfile?.typeRegex ?? ''),
+    descRegex: sanitizeSummaryText(candidateProfile?.descRegex ?? ''),
+    intentSignals: sanitizeProfileSignals(candidateProfile?.intentSignals ?? []),
     resumeSignalCount: candidateProfile?.resumeSignals?.length ?? 0,
-    resumeSignals: candidateProfile?.resumeSignals?.slice(0, 40) ?? [],
+    resumeSignals: sanitizeProfileSignals(candidateProfile?.resumeSignals ?? []).slice(0, 40),
     requiresLlmForFinalDecision: Boolean(candidateProfile?.requiresLlmForFinalDecision),
   }
 }
@@ -159,4 +159,12 @@ function normalizeSignal (token) {
   return String(token ?? '')
     .trim()
     .replace(/^[^\u4e00-\u9fffA-Za-z0-9+#._-]+|[^\u4e00-\u9fffA-Za-z0-9+#._-]+$/g, '')
+}
+
+function sanitizeProfileSignals (signals) {
+  return signals.filter(signal => !isSensitiveProfileSignal(signal))
+}
+
+function sanitizeSummaryText (text) {
+  return redactSensitiveFragments(text)
 }
