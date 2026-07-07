@@ -10,6 +10,7 @@ import { evaluateJobWithLlm } from '../src/llm-evaluator.mjs'
 import { resolveFinalDecision } from '../src/final-decision.mjs'
 import { buildCandidateProfile, summarizeCandidateProfile } from '../src/candidate-profile.mjs'
 import { buildOrRefreshCapabilityProfile, inspectCapabilityProfileCache } from '../src/capability-profile.mjs'
+import { buildGuardedPersonalizedGreetingPlan } from '../src/greeting-plan.mjs'
 import {
   extractCurrentJobFromBrowser,
   moveToNextJob,
@@ -59,6 +60,8 @@ async function dispatch (command, argv) {
       return extractJob(argv)
     case 'evaluate-job':
       return evaluateJob(argv)
+    case 'greeting-preview':
+      return greetingPreview(argv)
     case 'start-chat':
       return startChat(argv)
     case 'send-greeting':
@@ -131,6 +134,29 @@ async function evaluateJob (argv) {
     : null
   const finalDecision = resolveFinalDecision(ruleEvaluation, llmEvaluation)
   return { ok: true, command: 'evaluate-job', profile, candidateProfile: candidateProfileSummary, ruleEvaluation, llmEvaluation, finalDecision }
+}
+
+async function greetingPreview (argv) {
+  const profile = await readJobFromArgs(argv)
+  const { boss, llm } = loadRuntimeConfig()
+  const candidateProfile = buildCandidateProfile(boss)
+  const candidateProfileSummary = summarizeCandidateProfile(candidateProfile)
+  const { greetingPlan: fallbackPlan } = selectGreetingWithPlan(profile, boss)
+  const greetingPlan = await buildGuardedPersonalizedGreetingPlan({
+    job: profile,
+    bossConfig: boss,
+    candidateProfile,
+    llmConfig: llm,
+    fallbackPlan,
+  })
+
+  return {
+    ok: true,
+    command: 'greeting-preview',
+    profile,
+    candidateProfile: candidateProfileSummary,
+    greetingPlan,
+  }
 }
 
 async function sendGreeting (argv) {
@@ -369,6 +395,7 @@ function usage () {
       'ggr extract-job --job job.json',
       'ggr extract-job --from-browser [--recall-keyword value] [--city code]',
       'ggr evaluate-job --job job.json [--llm]',
+      'ggr greeting-preview --job job.json',
       'ggr start-chat --from-browser [--recall-keyword value] [--city code] [--confirm]',
       'ggr send-greeting --job job.json [--confirm]',
       'ggr next-job [--recall-keyword value] [--city code] [--confirm]',
