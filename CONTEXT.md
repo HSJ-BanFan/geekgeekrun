@@ -8,6 +8,10 @@ GeekGeekRun is a desktop automation system for job-search and recruiting workflo
 Permission for the job-seeker agent to perform a real application action, such as starting a chat or sending a greeting to a recruiter. Application Authorization must come from an LLM Apply Decision; deterministic rules may deny it but must not grant it.
 _Avoid_: rule apply, keyword apply, auto-apply score
 
+**Application Authorization Token**:
+A short-lived, consumable authorization artifact issued by the CLI after Application Authorization and used by fine-grained action tools to prove which job and actions were authorized. It binds the authorization to a Job Identity Anchor, run context, allowed actions, expiration, and consumption state.
+_Avoid_: remembered decision, prompt state, job title token
+
 **LLM Apply Decision**:
 A complete structured judgment that a job should be applied to after comparing the job description with the Candidate Profile and Target Role Intent. It may receive Recall Keyword metadata for traceability, but it must not depend on the keyword as a substitute for semantic job fit; malformed or incomplete LLM output is treated as uncertain rather than as authorization.
 _Avoid_: keyword match, source keyword decision
@@ -67,3 +71,7 @@ _Avoid_: list index, current page assumption, relative position
 **Job Match Guard**:
 A verification step that ensures the browser job or chat target still matches the job that received Application Authorization. Fallback sending is allowed only when the guard can preserve that match.
 _Avoid_: recent chat assumption, blind fallback send
+
+**Agent Orchestrator**:
+The coordinator that runs the job-seeker application loop by consuming Decision Evidence and invoking authorized CLI actions. It must not bypass Application Authorization, Rule Boundaries, Job Identity Anchors, Job Match Guards, or audit requirements.
+_Avoid_: browser bot, direct DOM agent, auto-apply script
