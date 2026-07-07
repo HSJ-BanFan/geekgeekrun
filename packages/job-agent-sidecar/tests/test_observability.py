@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from ggr_sidecar.observability import build_observability_report
-from ggr_sidecar.schemas import CliToolResult, RunBatchOutput
+from ggr_sidecar.schemas import ApprovalTraceMetadata, CliToolResult, RunBatchOutput
 
 
 def test_observability_report_correlates_successful_progress_and_audit(
@@ -202,6 +204,45 @@ def test_timeout_report_explains_interrupted_run_from_last_progress_stage(
     assert "CANARY_FULL_GREETING" not in serialized
     assert "CANARY_API_KEY" not in serialized
     assert str(progress_file) not in serialized
+
+
+@pytest.mark.parametrize(
+    ("outcome", "status"),
+    [
+        ("approved", "ok"),
+        ("denied", "approval_denied"),
+        ("timeout", "approval_timeout"),
+        ("cancelled", "approval_cancelled"),
+    ],
+)
+def test_approval_outcomes_are_recorded_as_redacted_trace_metadata(
+    outcome: str,
+    status: str,
+) -> None:
+    canary = r"C:\Users\Meiosis\secret\resume.png"
+
+    report = build_observability_report(
+        tool_result=CliToolResult(
+            ok=outcome == "approved",
+            status=status,
+            command=["node", canary, "run-batch", "--confirm"],
+            approval=ApprovalTraceMetadata(
+                requested=True,
+                outcome=outcome,
+                approved=outcome == "approved",
+                reasonCode="HUMAN_APPROVED" if outcome == "approved" else "STOPPED",
+            ),
+        ),
+        progress_file=None,
+        audit_file=None,
+    )
+    serialized = report.model_dump_json()
+
+    assert report.trace.approval is not None
+    assert report.trace.approval.outcome == outcome
+    assert report.trace.approval.approved is (outcome == "approved")
+    assert canary not in serialized
+    assert "secret" not in serialized
 
 
 def stage(

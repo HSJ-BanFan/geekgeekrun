@@ -6,6 +6,7 @@ from pathlib import Path
 
 from ggr_sidecar.subprocess_runner import (
     build_dry_run_batch_command,
+    run_confirmed_batch,
     run_dry_run_batch,
 )
 
@@ -135,6 +136,140 @@ def test_build_dry_run_batch_command_never_adds_confirm() -> None:
     assert "--headless" in command
 
 
+def test_run_confirmed_batch_requires_approval_before_confirmed_cli() -> None:
+    events: list[str] = []
+    completed = subprocess.CompletedProcess(
+        args=["node"],
+        returncode=0,
+        stdout=json.dumps(run_batch_output(dry_run=False)),
+        stderr="",
+    )
+
+    def approval_requester(request):
+        events.append("approval")
+        request_json = request.model_dump_json()
+        assert "confirmed_batch" in request_json
+        assert "CANARY_FULL_JOB_DESCRIPTION" not in request_json
+        return {"outcome": "approved", "reasonCode": "HUMAN_APPROVED"}
+
+    def runner(command, **kwargs):
+        events.append("runner")
+        assert "--confirm" in command
+        return completed
+
+    result = run_confirmed_batch(
+        repo_root=repo_root(),
+        recall_keywords=["CANARY_FULL_JOB_DESCRIPTION"],
+        approval_requester=approval_requester,
+        runner=runner,
+    )
+
+    assert events == ["approval", "runner"]
+    assert result.ok is True
+    assert result.status == "ok"
+    assert result.output is not None
+    assert result.output.dryRun is False
+    assert "--confirm" in result.command
+    assert result.approval is not None
+    assert result.approval.outcome == "approved"
+
+
+def test_run_confirmed_batch_denied_approval_stops_before_cli_command() -> None:
+    def runner(command, **kwargs):
+        raise AssertionError(f"runner should not be called with {command}")
+
+    result = run_confirmed_batch(
+        repo_root=repo_root(),
+        approval_requester=lambda request: {"outcome": "denied", "reasonCode": "HUMAN_DENIED"},
+        runner=runner,
+    )
+
+    assert result.ok is False
+    assert result.status == "approval_denied"
+    assert "--confirm" not in result.command
+    assert result.approval is not None
+    assert result.approval.outcome == "denied"
+    assert result.approval.request is not None
+    assert result.approval.request.confirmRequired is True
+
+
+def test_run_confirmed_batch_approval_timeout_stops_before_cli_command() -> None:
+    def runner(command, **kwargs):
+        raise AssertionError(f"runner should not be called with {command}")
+
+    result = run_confirmed_batch(
+        repo_root=repo_root(),
+        approval_requester=lambda request: {"outcome": "timeout", "reasonCode": "APPROVAL_TIMEOUT"},
+        runner=runner,
+    )
+
+    assert result.ok is False
+    assert result.status == "approval_timeout"
+    assert "--confirm" not in result.command
+    assert result.approval is not None
+    assert result.approval.outcome == "timeout"
+
+
+def test_run_confirmed_batch_cancelled_approval_stops_before_cli_command() -> None:
+    def runner(command, **kwargs):
+        raise AssertionError(f"runner should not be called with {command}")
+
+    result = run_confirmed_batch(
+        repo_root=repo_root(),
+        approval_requester=lambda request: {"outcome": "cancelled", "reasonCode": "APPROVAL_CANCELLED"},
+        runner=runner,
+    )
+
+    assert result.ok is False
+    assert result.status == "approval_cancelled"
+    assert "--confirm" not in result.command
+    assert result.approval is not None
+    assert result.approval.outcome == "cancelled"
+
+
+def test_run_confirmed_batch_without_approval_requester_never_emits_confirm() -> None:
+    def runner(command, **kwargs):
+        raise AssertionError(f"runner should not be called with {command}")
+
+    result = run_confirmed_batch(repo_root=repo_root(), runner=runner)
+
+    assert result.ok is False
+    assert result.status == "approval_missing"
+    assert "--confirm" not in result.command
+    assert result.approval is not None
+    assert result.approval.outcome == "missing"
+
+
+def test_confirmed_approval_request_redacts_sensitive_values() -> None:
+    canary_jd = "CANARY_FULL_JOB_DESCRIPTION"
+    canary_greeting = "CANARY_FULL_GREETING"
+    canary_resume = r"C:\Users\Meiosis\secret\resume.png"
+    captured_requests: list[str] = []
+
+    def approval_requester(request):
+        captured_requests.append(request.model_dump_json())
+        return {"outcome": "denied", "reasonCode": canary_resume}
+
+    result = run_confirmed_batch(
+        repo_root=repo_root(),
+        progress_file=canary_resume,
+        audit_file=canary_greeting,
+        recall_keywords=[canary_jd],
+        cities=[r"C:\Users\Meiosis\secret\city.txt"],
+        approval_requester=approval_requester,
+    )
+
+    serialized_request = captured_requests[0]
+    serialized_result = result.model_dump_json()
+    assert canary_jd not in serialized_request
+    assert canary_greeting not in serialized_request
+    assert canary_resume not in serialized_request
+    assert "secret" not in serialized_request
+    assert canary_jd not in serialized_result
+    assert canary_greeting not in serialized_result
+    assert canary_resume not in serialized_result
+
+
 def test_run_dry_run_batch_rejects_confirmed_cli_output() -> None:
     payload = run_batch_output()
     payload["dryRun"] = False
@@ -164,12 +299,12 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
-def run_batch_output() -> dict:
+def run_batch_output(*, dry_run: bool = True) -> dict:
     return {
         "ok": True,
         "command": "run-batch",
         "runId": "batch-1",
-        "dryRun": True,
+        "dryRun": dry_run,
         "targetCount": 1,
         "sentCount": 0,
         "examinedCount": 1,
@@ -205,25 +340,25 @@ def run_batch_output() -> dict:
                     "reason": "matched",
                 },
                 "startChat": {
-                    "dryRun": True,
+                    "dryRun": dry_run,
                     "success": True,
-                    "clicked": False,
+                    "clicked": dry_run is False,
                 },
                 "sendGreeting": {
-                    "dryRun": True,
-                    "textSent": False,
+                    "dryRun": dry_run,
+                    "textSent": dry_run is False,
                     "imageUploaded": False,
                 },
                 "nextJob": {
-                    "dryRun": True,
+                    "dryRun": dry_run,
                     "moved": True,
                 },
                 "delivery": {
-                    "successful": False,
-                    "textSent": False,
+                    "successful": dry_run is False,
+                    "textSent": dry_run is False,
                     "imageUploaded": False,
                 },
-                "sentCount": 0,
+                "sentCount": 0 if dry_run else 1,
                 "targetCount": 1,
                 "auditFile": None,
                 "error": None,

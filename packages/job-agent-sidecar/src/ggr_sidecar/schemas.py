@@ -48,6 +48,54 @@ class DeliverySummary(FlexibleCliModel):
     reason: str | None = None
 
 
+ApprovalOutcome = Literal["approved", "denied", "timeout", "cancelled", "missing"]
+
+
+class ApprovalRequestMetadata(FlexibleCliModel):
+    command: Literal["run-batch"] = "run-batch"
+    mode: Literal["confirmed"] = "confirmed"
+    realActions: bool = True
+    confirmRequired: bool = True
+    targetCount: int
+    maxCandidates: int | None = None
+    candidateTimeoutMs: int | None = None
+    recallKeywordCount: int = 0
+    cityCount: int = 0
+    llm: bool = False
+    headless: bool = False
+    commandOptions: list[str] = Field(default_factory=list)
+    redactedFields: list[str] = Field(
+        default_factory=lambda: [
+            "job_description",
+            "greeting",
+            "resume",
+            "local_paths",
+            "cookies",
+            "local_storage",
+            "api_keys",
+        ]
+    )
+
+
+class ApprovalRequest(FlexibleCliModel):
+    kind: Literal["confirmed_batch"] = "confirmed_batch"
+    prompt: str
+    metadata: ApprovalRequestMetadata
+
+
+class ApprovalDecision(FlexibleCliModel):
+    outcome: ApprovalOutcome
+    reasonCode: str | None = None
+
+
+class ApprovalTraceMetadata(FlexibleCliModel):
+    requested: bool
+    outcome: ApprovalOutcome
+    approved: bool = False
+    reasonCode: str | None = None
+    request: ApprovalRequestMetadata | None = None
+
+
 class BatchResult(FlexibleCliModel):
     batchRunId: str
     runId: str
@@ -75,7 +123,7 @@ class RunBatchOutput(FlexibleCliModel):
     ok: bool
     command: Literal["run-batch"]
     runId: str
-    dryRun: Literal[True]
+    dryRun: bool
     targetCount: int
     sentCount: int
     examinedCount: int
@@ -104,6 +152,10 @@ class CliToolResult(FlexibleCliModel):
         "timeout",
         "parse_error",
         "validation_error",
+        "approval_denied",
+        "approval_timeout",
+        "approval_cancelled",
+        "approval_missing",
     ]
     command: list[str]
     exitCode: int | None = None
@@ -114,3 +166,4 @@ class CliToolResult(FlexibleCliModel):
     output: RunBatchOutput | None = None
     parseError: str | None = None
     validationErrors: list[ValidationFailure] | None = None
+    approval: ApprovalTraceMetadata | None = None

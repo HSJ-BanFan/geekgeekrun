@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .schemas import CliToolResult
+from .schemas import ApprovalTraceMetadata, CliToolResult
 
 
 class FlexibleObservabilityModel(BaseModel):
@@ -37,8 +37,9 @@ class TraceJob(FlexibleObservabilityModel):
 class TraceMetadata(FlexibleObservabilityModel):
     toolName: str
     runId: str
-    status: Literal["completed", "failed", "interrupted"]
+    status: Literal["completed", "failed", "interrupted", "stopped"]
     command: CommandSummary | None = None
+    approval: ApprovalTraceMetadata | None = None
     durationMs: int | None = None
     progressRecordCount: int = 0
     auditRecordCount: int = 0
@@ -110,12 +111,15 @@ def build_observability_report(
     )
     if failure_category:
         reason_codes = _dedupe([*reason_codes, failure_category.upper()])
+    if tool_result.approval and tool_result.approval.reasonCode:
+        reason_codes = _dedupe([*reason_codes, tool_result.approval.reasonCode])
 
     trace = TraceMetadata(
         toolName="run-batch",
         runId=inferred_run_id,
         status=status,
         command=_summarize_command(tool_result.command),
+        approval=tool_result.approval,
         durationMs=_duration_ms(progress_records),
         progressRecordCount=len(progress_records),
         auditRecordCount=len(audit_records),
@@ -291,7 +295,9 @@ def _trace_job_from_records(
     )
 
 
-def _trace_status(tool_result: CliToolResult) -> Literal["completed", "failed", "interrupted"]:
+def _trace_status(tool_result: CliToolResult) -> Literal["completed", "failed", "interrupted", "stopped"]:
+    if tool_result.status.startswith("approval_"):
+        return "stopped"
     if tool_result.status == "timeout":
         return "interrupted"
     if not tool_result.ok:
@@ -342,6 +348,10 @@ def _build_recovery_summary(trace: TraceMetadata) -> RecoverySummary:
         recommendation = "safe_stop"
         safe_options = ["safe_stop"]
         explanation = "Run completed; no automatic continuation is needed."
+    elif trace.status == "stopped":
+        recommendation = "safe_stop"
+        safe_options = ["safe_stop"]
+        explanation = "Run stopped before confirmed CLI invocation because sidecar approval was not granted."
     elif trace.failureCategory in {"stdout_parse_error", "stdout_validation_error"}:
         recommendation = "inspect_cli_contract"
         safe_options = ["stop_and_inspect_progress"]

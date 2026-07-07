@@ -5,33 +5,31 @@ import json
 import sys
 from pathlib import Path
 
+from .approval import make_terminal_approval_requester
 from .observability import build_observability_report
-from .subprocess_runner import run_dry_run_batch
+from .schemas import CliToolResult
+from .subprocess_runner import run_confirmed_batch, run_dry_run_batch
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ggr-sidecar",
-        description="Supervise dry-run job batches through the existing Node CLI.",
+        description="Supervise job batches through the existing Node CLI.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    batch = subparsers.add_parser(
+    dry_run_batch = subparsers.add_parser(
         "supervise-dry-run-batch",
         help="Invoke ggr run-batch without --confirm and validate its JSON stdout.",
     )
-    batch.add_argument("--repo-root", type=Path, default=_default_repo_root())
-    batch.add_argument("--node", default="node")
-    batch.add_argument("--timeout-ms", type=int, default=300_000)
-    batch.add_argument("--target-count", type=int, default=1)
-    batch.add_argument("--max-candidates", type=int)
-    batch.add_argument("--candidate-timeout-ms", type=int)
-    batch.add_argument("--progress-file", type=Path)
-    batch.add_argument("--audit-file", type=Path)
-    batch.add_argument("--recall-keyword", action="append", default=[])
-    batch.add_argument("--city", action="append", default=[])
-    batch.add_argument("--llm", action="store_true")
-    batch.add_argument("--headless", action="store_true")
+    _add_batch_arguments(dry_run_batch)
+
+    confirmed_batch = subparsers.add_parser(
+        "supervise-confirmed-batch",
+        help="Request sidecar approval, then invoke ggr run-batch with --confirm.",
+    )
+    _add_batch_arguments(confirmed_batch)
+    confirmed_batch.add_argument("--approval-timeout-ms", type=int, default=60_000)
 
     return parser
 
@@ -55,25 +53,67 @@ def main(argv: list[str] | None = None) -> int:
             llm=args.llm,
             headless=args.headless,
         )
-        observability = build_observability_report(
-            tool_result=result,
-            progress_file=args.progress_file or _progress_file_from_result(result),
-            audit_file=args.audit_file or _audit_file_from_result(result),
+        return _write_result_with_observability(result, args)
+
+    if args.command == "supervise-confirmed-batch":
+        result = run_confirmed_batch(
+            repo_root=args.repo_root,
+            node=args.node,
+            timeout_ms=args.timeout_ms,
+            target_count=args.target_count,
+            max_candidates=args.max_candidates,
+            candidate_timeout_ms=args.candidate_timeout_ms,
+            progress_file=args.progress_file,
+            audit_file=args.audit_file,
+            recall_keywords=args.recall_keyword,
+            cities=args.city,
+            llm=args.llm,
+            headless=args.headless,
+            approval_requester=make_terminal_approval_requester(
+                timeout_ms=args.approval_timeout_ms,
+            ),
         )
-        payload = result.model_dump(exclude_none=True)
-        payload["observability"] = observability.model_dump(exclude_none=True)
-        sys.stdout.write(
-            json.dumps(
-                payload,
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
-        sys.stdout.write("\n")
-        return 0 if result.ok else 1
+        return _write_result_with_observability(result, args)
 
     parser.error(f"unknown command: {args.command}")
     return 2
+
+
+def _add_batch_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--repo-root", type=Path, default=_default_repo_root())
+    parser.add_argument("--node", default="node")
+    parser.add_argument("--timeout-ms", type=int, default=300_000)
+    parser.add_argument("--target-count", type=int, default=1)
+    parser.add_argument("--max-candidates", type=int)
+    parser.add_argument("--candidate-timeout-ms", type=int)
+    parser.add_argument("--progress-file", type=Path)
+    parser.add_argument("--audit-file", type=Path)
+    parser.add_argument("--recall-keyword", action="append", default=[])
+    parser.add_argument("--city", action="append", default=[])
+    parser.add_argument("--llm", action="store_true")
+    parser.add_argument("--headless", action="store_true")
+
+
+def _write_result_with_observability(
+    result: CliToolResult,
+    args: argparse.Namespace,
+) -> int:
+    observability = build_observability_report(
+        tool_result=result,
+        progress_file=args.progress_file or _progress_file_from_result(result),
+        audit_file=args.audit_file or _audit_file_from_result(result),
+    )
+    payload = result.model_dump(exclude_none=True)
+    payload["observability"] = observability.model_dump(exclude_none=True)
+    sys.stdout.write(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    sys.stdout.write("\n")
+    return 0 if result.ok else 1
 
 
 def _default_repo_root() -> Path:

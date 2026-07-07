@@ -8,7 +8,14 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from .schemas import CliToolResult, RunBatchOutput, ValidationFailure
+from .approval import (
+    ApprovalRequester,
+    approval_trace_from_decision,
+    build_confirmed_batch_approval_request,
+    missing_approval_trace,
+    normalize_approval_decision,
+)
+from .schemas import ApprovalTraceMetadata, CliToolResult, RunBatchOutput, ValidationFailure
 
 CompletedRunner = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -47,8 +54,77 @@ def run_dry_run_batch(
         command=command,
         cwd=root,
         timeout_ms=timeout_ms,
+        expected_dry_run=True,
         runner=runner,
     )
+
+
+def run_confirmed_batch(
+    *,
+    repo_root: Path | str | None = None,
+    node: str = "node",
+    timeout_ms: int = 300_000,
+    target_count: int = 1,
+    max_candidates: int | None = None,
+    candidate_timeout_ms: int | None = None,
+    progress_file: Path | str | None = None,
+    audit_file: Path | str | None = None,
+    recall_keywords: Sequence[str] | None = None,
+    cities: Sequence[str] | None = None,
+    llm: bool = False,
+    headless: bool = False,
+    approval_requester: ApprovalRequester | None = None,
+    runner: CompletedRunner = subprocess.run,
+) -> CliToolResult:
+    root = Path(repo_root) if repo_root is not None else _default_repo_root()
+    normalized_keywords = recall_keywords or []
+    normalized_cities = cities or []
+    approval_request = build_confirmed_batch_approval_request(
+        target_count=target_count,
+        max_candidates=max_candidates,
+        candidate_timeout_ms=candidate_timeout_ms,
+        recall_keywords=normalized_keywords,
+        cities=normalized_cities,
+        llm=llm,
+        headless=headless,
+    )
+    if approval_requester is None:
+        return _approval_stop_result(
+            approval=missing_approval_trace(approval_request),
+        )
+
+    decision = normalize_approval_decision(approval_requester(approval_request))
+    approval = approval_trace_from_decision(
+        request=approval_request,
+        decision=decision,
+    )
+    if decision.outcome != "approved":
+        return _approval_stop_result(
+            approval=approval,
+        )
+
+    command = build_confirmed_batch_command(
+        repo_root=root,
+        node=node,
+        target_count=target_count,
+        max_candidates=max_candidates,
+        candidate_timeout_ms=candidate_timeout_ms,
+        progress_file=progress_file,
+        audit_file=audit_file,
+        recall_keywords=normalized_keywords,
+        cities=normalized_cities,
+        llm=llm,
+        headless=headless,
+    )
+    result = run_cli_json_tool(
+        command=command,
+        cwd=root,
+        timeout_ms=timeout_ms,
+        expected_dry_run=False,
+        approval=approval,
+        runner=runner,
+    )
+    return result
 
 
 def build_dry_run_batch_command(
@@ -65,6 +141,67 @@ def build_dry_run_batch_command(
     llm: bool,
     headless: bool,
 ) -> list[str]:
+    return build_run_batch_command(
+        repo_root=repo_root,
+        node=node,
+        target_count=target_count,
+        max_candidates=max_candidates,
+        candidate_timeout_ms=candidate_timeout_ms,
+        progress_file=progress_file,
+        audit_file=audit_file,
+        recall_keywords=recall_keywords,
+        cities=cities,
+        llm=llm,
+        headless=headless,
+        confirm=False,
+    )
+
+
+def build_confirmed_batch_command(
+    *,
+    repo_root: Path,
+    node: str,
+    target_count: int,
+    max_candidates: int | None,
+    candidate_timeout_ms: int | None,
+    progress_file: Path | str | None,
+    audit_file: Path | str | None,
+    recall_keywords: Sequence[str],
+    cities: Sequence[str],
+    llm: bool,
+    headless: bool,
+) -> list[str]:
+    return build_run_batch_command(
+        repo_root=repo_root,
+        node=node,
+        target_count=target_count,
+        max_candidates=max_candidates,
+        candidate_timeout_ms=candidate_timeout_ms,
+        progress_file=progress_file,
+        audit_file=audit_file,
+        recall_keywords=recall_keywords,
+        cities=cities,
+        llm=llm,
+        headless=headless,
+        confirm=True,
+    )
+
+
+def build_run_batch_command(
+    *,
+    repo_root: Path,
+    node: str,
+    target_count: int,
+    max_candidates: int | None,
+    candidate_timeout_ms: int | None,
+    progress_file: Path | str | None,
+    audit_file: Path | str | None,
+    recall_keywords: Sequence[str],
+    cities: Sequence[str],
+    llm: bool,
+    headless: bool,
+    confirm: bool,
+) -> list[str]:
     cli_path = repo_root / "packages" / "job-agent-cli" / "bin" / "ggr.mjs"
     command = [
         node,
@@ -74,6 +211,8 @@ def build_dry_run_batch_command(
         "--target-count",
         str(target_count),
     ]
+    if confirm:
+        command.append("--confirm")
     if max_candidates is not None:
         command.extend(["--max-candidates", str(max_candidates)])
     if candidate_timeout_ms is not None:
@@ -98,6 +237,8 @@ def run_cli_json_tool(
     command: list[str],
     cwd: Path,
     timeout_ms: int,
+    expected_dry_run: bool | None = None,
+    approval: ApprovalTraceMetadata | None = None,
     runner: CompletedRunner = subprocess.run,
 ) -> CliToolResult:
     try:
@@ -117,6 +258,7 @@ def run_cli_json_tool(
             timeoutMs=timeout_ms,
             stdout=_decode_timeout_text(err.stdout),
             stderr=_decode_timeout_text(err.stderr),
+            approval=approval,
         )
 
     if completed.returncode != 0:
@@ -127,6 +269,7 @@ def run_cli_json_tool(
             exitCode=completed.returncode,
             stdout=completed.stdout,
             stderr=completed.stderr,
+            approval=approval,
         )
 
     try:
@@ -140,6 +283,7 @@ def run_cli_json_tool(
             stdout=completed.stdout,
             stderr=completed.stderr,
             parseError=str(err),
+            approval=approval,
         )
 
     try:
@@ -156,6 +300,25 @@ def run_cli_json_tool(
                 ValidationFailure.model_validate(error)
                 for error in err.errors(include_url=False)
             ],
+            approval=approval,
+        )
+
+    if expected_dry_run is not None and output.dryRun is not expected_dry_run:
+        return CliToolResult(
+            ok=False,
+            status="validation_error",
+            command=command,
+            exitCode=completed.returncode,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+            validationErrors=[
+                ValidationFailure(
+                    loc=["dryRun"],
+                    msg=f"Input should be {expected_dry_run}",
+                    type="literal_error",
+                )
+            ],
+            approval=approval,
         )
 
     return CliToolResult(
@@ -166,6 +329,7 @@ def run_cli_json_tool(
         stdout=completed.stdout,
         stderr=completed.stderr,
         output=output,
+        approval=approval,
     )
 
 
@@ -179,3 +343,23 @@ def _decode_timeout_text(value: str | bytes | None) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return value
+
+
+def _approval_stop_result(
+    *,
+    approval: ApprovalTraceMetadata,
+) -> CliToolResult:
+    status = {
+        "denied": "approval_denied",
+        "timeout": "approval_timeout",
+        "cancelled": "approval_cancelled",
+        "missing": "approval_missing",
+    }.get(approval.outcome)
+    if status is None:
+        status = "approval_missing"
+    return CliToolResult(
+        ok=False,
+        status=status,
+        command=[],
+        approval=approval,
+    )
