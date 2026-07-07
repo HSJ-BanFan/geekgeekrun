@@ -22,6 +22,7 @@ def run_dry_run_batch(
     max_candidates: int | None = None,
     candidate_timeout_ms: int | None = None,
     progress_file: Path | str | None = None,
+    audit_file: Path | str | None = None,
     recall_keywords: Sequence[str] | None = None,
     cities: Sequence[str] | None = None,
     llm: bool = False,
@@ -36,6 +37,7 @@ def run_dry_run_batch(
         max_candidates=max_candidates,
         candidate_timeout_ms=candidate_timeout_ms,
         progress_file=progress_file,
+        audit_file=audit_file,
         recall_keywords=recall_keywords or [],
         cities=cities or [],
         llm=llm,
@@ -57,6 +59,7 @@ def build_dry_run_batch_command(
     max_candidates: int | None,
     candidate_timeout_ms: int | None,
     progress_file: Path | str | None,
+    audit_file: Path | str | None,
     recall_keywords: Sequence[str],
     cities: Sequence[str],
     llm: bool,
@@ -77,6 +80,8 @@ def build_dry_run_batch_command(
         command.extend(["--candidate-timeout-ms", str(candidate_timeout_ms)])
     if progress_file is not None:
         command.extend(["--progress-file", str(progress_file)])
+    if audit_file is not None:
+        command.extend(["--audit-file", str(audit_file)])
     for keyword in recall_keywords:
         command.extend(["--recall-keyword", keyword])
     for city in cities:

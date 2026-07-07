@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from .observability import build_observability_report
 from .subprocess_runner import run_dry_run_batch
 
 
@@ -26,6 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch.add_argument("--max-candidates", type=int)
     batch.add_argument("--candidate-timeout-ms", type=int)
     batch.add_argument("--progress-file", type=Path)
+    batch.add_argument("--audit-file", type=Path)
     batch.add_argument("--recall-keyword", action="append", default=[])
     batch.add_argument("--city", action="append", default=[])
     batch.add_argument("--llm", action="store_true")
@@ -47,14 +49,22 @@ def main(argv: list[str] | None = None) -> int:
             max_candidates=args.max_candidates,
             candidate_timeout_ms=args.candidate_timeout_ms,
             progress_file=args.progress_file,
+            audit_file=args.audit_file,
             recall_keywords=args.recall_keyword,
             cities=args.city,
             llm=args.llm,
             headless=args.headless,
         )
+        observability = build_observability_report(
+            tool_result=result,
+            progress_file=args.progress_file or _progress_file_from_result(result),
+            audit_file=args.audit_file or _audit_file_from_result(result),
+        )
+        payload = result.model_dump(exclude_none=True)
+        payload["observability"] = observability.model_dump(exclude_none=True)
         sys.stdout.write(
             json.dumps(
-                result.model_dump(exclude_none=True),
+                payload,
                 ensure_ascii=False,
                 indent=2,
             )
@@ -68,3 +78,18 @@ def main(argv: list[str] | None = None) -> int:
 
 def _default_repo_root() -> Path:
     return Path(__file__).resolve().parents[4]
+
+
+def _progress_file_from_result(result) -> str | None:
+    if result.output is None:
+        return None
+    return result.output.progressFile
+
+
+def _audit_file_from_result(result) -> str | None:
+    if result.output is None:
+        return None
+    for item in result.output.results:
+        if item.auditFile:
+            return item.auditFile
+    return None

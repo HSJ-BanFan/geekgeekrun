@@ -115,6 +115,7 @@ def test_build_dry_run_batch_command_never_adds_confirm() -> None:
         max_candidates=9,
         candidate_timeout_ms=1_000,
         progress_file=Path("progress.jsonl"),
+        audit_file=Path("audit.jsonl"),
         recall_keywords=["Python", "AI"],
         cities=["101020100"],
         llm=True,
@@ -128,6 +129,7 @@ def test_build_dry_run_batch_command_never_adds_confirm() -> None:
         "--from-browser",
     ]
     assert "--confirm" not in command
+    assert "--audit-file" in command
     assert command.count("--recall-keyword") == 2
     assert "--llm" in command
     assert "--headless" in command
