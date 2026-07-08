@@ -1179,7 +1179,7 @@ function usage () {
       'ggr authorization-token inspect --token-id token-id [--token-file file] [--action start_chat]',
       'ggr authorization-token consume --token-id token-id [--token-file file] [--action start_chat]',
       'ggr authorized-action --action start_chat --token-id token-id [--token-file file] [--audit-file file] [--confirm]',
-      'ggr recent-applications --from-browser [--limit 100] [--include-jd] [--analyze] [--output file] [--browser-url url|--cdp-port port]',
+      'ggr recent-applications --from-browser [--limit 100] [--include-jd] [--analyze] [--output file] [--analysis-output file] [--browser-url url|--cdp-port port]',
       'ggr run-once --job job.json [--llm] [--confirm]',
       'ggr run-once --from-browser [--recall-keyword value] [--city code] [--llm] [--confirm]',
       'ggr run-batch --from-browser --llm --confirm [--target-count 20] [--max-candidates 160] [--candidate-timeout-ms 240000] [--progress-file file]',

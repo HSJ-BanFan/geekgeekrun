@@ -151,13 +151,12 @@ export async function runRecentApplicationsOnOpenPage (page, {
   if (analyze) {
     const analysis = analyzeApplicationPreferences(artifact.records)
     analysisArtifactPath = resolveAnalysisOutputPath(analysisOutputPath, rawArtifactPath)
-    fs.mkdirSync(path.dirname(analysisArtifactPath), { recursive: true })
-    fs.writeFileSync(analysisArtifactPath, `${JSON.stringify({
+    await writeArtifact(analysisArtifactPath, {
       schemaVersion: 'recent-application-preferences.v1',
       generatedAt: captureTime,
       sourceArtifactPath: rawArtifactPath,
       ...analysis,
-    }, null, 2)}\n`, 'utf8')
+    })
   }
 
   return buildCommandSummary({
@@ -168,22 +167,7 @@ export async function runRecentApplicationsOnOpenPage (page, {
 }
 
 export async function extractRecentApplicationListFromChatStore (page, { limit = defaultLimit } = {}) {
-  const raw = await page.evaluate(() => {
-    const bodyText = document.body?.innerText ?? ''
-    const url = location.href
-    if (/登录\/注册|请登录|扫码登录|验证码登录|登录后继续/.test(bodyText)) {
-      return { ok: false, reasonCode: 'BOSS_LOGIN_REQUIRED', url, visibleText: bodyText.slice(0, 500) }
-    }
-    if (/安全验证|环境异常|验证后继续|拖动滑块/.test(bodyText)) {
-      return { ok: false, reasonCode: 'BOSS_SAFETY_VERIFICATION_REQUIRED', url, visibleText: bodyText.slice(0, 500) }
-    }
-    const friendInfos = window.chatStore?.friendInfos
-    if (!friendInfos) {
-      return { ok: false, reasonCode: 'BOSS_CHAT_STORE_UNAVAILABLE', url, visibleText: bodyText.slice(0, 500) }
-    }
-    const values = Array.isArray(friendInfos) ? friendInfos : Object.values(friendInfos)
-    return { ok: true, url, friendInfos: values }
-  })
+  const raw = await page.evaluate(readChatStoreStateInPage)
 
   if (!raw?.ok) {
     return {
@@ -211,37 +195,7 @@ export async function extractJobDescriptionFromDetailPage (page, detailUrl) {
   await page.waitForFunction?.(() => document.readyState === 'complete', { timeout: 60000 }).catch(() => {})
   await sleep(1200)
 
-  const detail = await page.evaluate(() => {
-    const bodyText = document.body?.innerText ?? ''
-    const url = location.href
-    const pageTitle = document.title ?? ''
-    const visibleText = bodyText.slice(0, 1200)
-    const selectors = [
-      '.job-detail-section .job-sec-text',
-      '.job-sec .job-sec-text',
-      '.job-detail-box .job-sec-text',
-      '[class*="job-sec-text"]',
-    ]
-    let jdText = ''
-    for (const selector of selectors) {
-      const text = document.querySelector(selector)?.innerText?.trim?.()
-      if (text) {
-        jdText = text
-        break
-      }
-    }
-    if (!jdText) {
-      const headings = [...document.querySelectorAll('h1,h2,h3,h4,.job-sec-title,.title,[class*="title"]')]
-      const heading = headings.find(el => /职位描述|岗位职责|工作职责|职位详情/.test(el.textContent ?? ''))
-      const section = heading?.closest?.('.job-detail-section,.job-sec,section,div')
-      jdText = section?.querySelector?.('.job-sec-text,[class*="text"],p')?.innerText?.trim?.() ??
-        section?.innerText?.replace(/职位描述|岗位职责|工作职责|职位详情/, '').trim?.() ??
-        ''
-    }
-    const salary = document.querySelector('.salary,.job-salary,[class*="salary"]')?.innerText?.trim?.() ?? ''
-    const companyDescription = document.querySelector('.company-info,.sider-company,[class*="company"] .text')?.innerText?.trim?.() ?? ''
-    return { url, pageTitle, visibleText, jdText, salary, companyDescription }
-  })
+  const detail = await page.evaluate(readJobDetailStateInPage)
 
   const safetyReason = detectBlockingReason(detail?.visibleText, detail?.url)
   if (safetyReason) {
@@ -272,6 +226,58 @@ export async function extractJobDescriptionFromDetailPage (page, detailUrl) {
     salary: detail?.salary ?? '',
     companyDescription: detail?.companyDescription ?? '',
   }
+}
+
+// Both readers below run inside the BOSS page via page.evaluate, so they must
+// stay self-contained: no references to module-scope helpers or constants.
+// Keep their login/safety text checks in sync with detectBlockingReason.
+export function readChatStoreStateInPage () {
+  const bodyText = document.body?.innerText ?? ''
+  const url = location.href
+  if (/登录\/注册|请登录|扫码登录|验证码登录|登录后继续/.test(bodyText)) {
+    return { ok: false, reasonCode: 'BOSS_LOGIN_REQUIRED', url, visibleText: bodyText.slice(0, 500) }
+  }
+  if (/安全验证|环境异常|验证后继续|拖动滑块/.test(bodyText)) {
+    return { ok: false, reasonCode: 'BOSS_SAFETY_VERIFICATION_REQUIRED', url, visibleText: bodyText.slice(0, 500) }
+  }
+  const friendInfos = window.chatStore?.friendInfos
+  if (!friendInfos) {
+    return { ok: false, reasonCode: 'BOSS_CHAT_STORE_UNAVAILABLE', url, visibleText: bodyText.slice(0, 500) }
+  }
+  const values = Array.isArray(friendInfos) ? friendInfos : Object.values(friendInfos)
+  return { ok: true, url, friendInfos: values }
+}
+
+export function readJobDetailStateInPage () {
+  const bodyText = document.body?.innerText ?? ''
+  const url = location.href
+  const pageTitle = document.title ?? ''
+  const visibleText = bodyText.slice(0, 1200)
+  const selectors = [
+    '.job-detail-section .job-sec-text',
+    '.job-sec .job-sec-text',
+    '.job-detail-box .job-sec-text',
+    '[class*="job-sec-text"]',
+  ]
+  let jdText = ''
+  for (const selector of selectors) {
+    const text = document.querySelector(selector)?.innerText?.trim?.()
+    if (text) {
+      jdText = text
+      break
+    }
+  }
+  if (!jdText) {
+    const headings = [...document.querySelectorAll('h1,h2,h3,h4,.job-sec-title,.title,[class*="title"]')]
+    const heading = headings.find(el => /职位描述|岗位职责|工作职责|职位详情/.test(el.textContent ?? ''))
+    const section = heading?.closest?.('.job-detail-section,.job-sec,section,div')
+    jdText = section?.querySelector?.('.job-sec-text,[class*="text"],p')?.innerText?.trim?.() ??
+      section?.innerText?.replace(/职位描述|岗位职责|工作职责|职位详情/, '').trim?.() ??
+      ''
+  }
+  const salary = document.querySelector('.salary,.job-salary,[class*="salary"]')?.innerText?.trim?.() ?? ''
+  const companyDescription = document.querySelector('.company-info,.sider-company,[class*="company"] .text')?.innerText?.trim?.() ?? ''
+  return { url, pageTitle, visibleText, jdText, salary, companyDescription }
 }
 
 export function analyzeApplicationPreferences (records) {
@@ -320,6 +326,7 @@ export function analyzeApplicationPreferences (records) {
         title: record?.title ?? '',
         company: record?.company ?? '',
         recruiter: record?.recruiter?.name ?? '',
+        direction: String(record?.lastMessage?.direction ?? ''),
         lastMessage: lastMessageText,
       })
     }
@@ -385,7 +392,7 @@ function createBaseArtifact ({ captureTime, limit, includeJd }) {
 function normalizeFriendInfo (item) {
   const job = firstObject(item?.jobInfo, item?.job, item?.position, item?.targetJobData, item?.expectJob)
   const boss = firstObject(item?.bossInfo, item?.boss, item?.recruiter, item?.userInfo, item?.friendInfo)
-  const timestamp = firstNumber(
+  const timestamp = normalizeTimestamp(firstNumber(
     item?.lastTS,
     item?.lastTs,
     item?.lastTime,
@@ -395,7 +402,7 @@ function normalizeFriendInfo (item) {
     item?.activeTime,
     job?.lastTS,
     job?.updateTime
-  )
+  ))
   const encryptJobId = firstString(item?.encryptJobId, item?.encryptId, item?.jobId, job?.encryptJobId, job?.encryptId, job?.jobId)
   const numericJobId = firstString(item?.numericJobId, item?.jobIdNumber, item?.jobIdNum, job?.numericJobId, job?.jobIdNumber, job?.jobIdNum)
   const securityId = firstString(item?.securityId, job?.securityId)
@@ -405,7 +412,7 @@ function normalizeFriendInfo (item) {
     status: 'pending',
     conversationId: firstString(item?.friendId, item?.conversationId, item?.encryptBossId, item?.uid, item?.id),
     timestamp,
-    timestampIso: timestamp ? new Date(normalizeTimestamp(timestamp)).toISOString() : '',
+    timestampIso: timestamp ? new Date(timestamp).toISOString() : '',
     title: firstString(item?.jobName, item?.title, item?.positionName, job?.jobName, job?.title, job?.positionName),
     company: firstString(item?.brandName, item?.companyName, item?.company, job?.brandName, job?.companyName, job?.company),
     city: firstString(item?.cityName, item?.city, job?.cityName, job?.city),
@@ -474,7 +481,9 @@ function summarizeRecords (records) {
     const jdStatus = record.jd?.status || 'pending'
     summary.jd[jdStatus] = (summary.jd[jdStatus] ?? 0) + 1
     if (record.reasonCode) summary.reasonCodes[record.reasonCode] = (summary.reasonCodes[record.reasonCode] ?? 0) + 1
-    if (record.jd?.reasonCode) summary.reasonCodes[record.jd.reasonCode] = (summary.reasonCodes[record.jd.reasonCode] ?? 0) + 1
+    if (record.jd?.reasonCode && record.jd.reasonCode !== record.reasonCode) {
+      summary.reasonCodes[record.jd.reasonCode] = (summary.reasonCodes[record.jd.reasonCode] ?? 0) + 1
+    }
   }
   return summary
 }
@@ -518,7 +527,7 @@ function firstBlockedReason (records) {
   return records.find(record => record.status === 'blocked')?.reasonCode ?? ''
 }
 
-function buildPreferenceExample (record, matchedCategories, noiseReasons) {
+function buildPreferenceExample (record, matchedCategories, noiseCategories) {
   return {
     rank: record?.rank,
     title: record?.title ?? '',
@@ -526,7 +535,7 @@ function buildPreferenceExample (record, matchedCategories, noiseReasons) {
     city: record?.city ?? '',
     positionCategory: record?.positionCategory ?? '',
     matchedCategories,
-    noiseReasons,
+    noiseReasons: noiseCategories,
   }
 }
 
@@ -599,7 +608,7 @@ function firstNumber (...values) {
 }
 
 const categoryDefinitions = [
-  { key: 'ai_llm_agent_aigc', pattern: /\b(ai|llm|agent|aigc|gpt|大模型|智能体|生成式|人工智能)\b/i },
+  { key: 'ai_llm_agent_aigc', pattern: /\b(ai|llm|agent|aigc|gpt)\b|大模型|智能体|生成式|人工智能/i },
   { key: 'full_stack', pattern: /全栈|full[-\s]?stack/i },
   { key: 'python_backend_data_engineering', pattern: /python|fastapi|django|flask|后端|数据工程|数据管道|pipeline/i },
   { key: 'frontend_react_vue', pattern: /前端|react|vue|typescript|javascript|next\.?js/i },
