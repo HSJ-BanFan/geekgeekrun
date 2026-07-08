@@ -9,6 +9,10 @@ from .application_loop import (
     run_bounded_tokened_application_batch,
     run_single_job_application_loop,
 )
+from .application_preferences import (
+    build_preference_evidence_package_from_file,
+    review_recent_application_preferences,
+)
 from .approval import make_terminal_approval_requester
 from .observability import build_observability_report
 from .schemas import CliToolResult
@@ -46,6 +50,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run a bounded batch through token-gated fine-grained CLI tools.",
     )
     _add_tokened_batch_arguments(tokened_batch)
+
+    preference_review = subparsers.add_parser(
+        "review-application-preferences",
+        help="Review recent local application records and JD summaries before real actions.",
+    )
+    preference_review.add_argument("--db-path", type=Path)
+    preference_review.add_argument("--limit", type=int, default=100)
+
+    preference_evidence = subparsers.add_parser(
+        "build-preference-evidence",
+        help="Build a redacted Preference Evidence Package from recent applications with JD.",
+    )
+    preference_evidence.add_argument("--recent-applications", type=Path, required=True)
+    preference_evidence.add_argument("--output", type=Path)
+    preference_evidence.add_argument("--now")
 
     return parser
 
@@ -113,14 +132,9 @@ def main(argv: list[str] | None = None) -> int:
                 else None
             ),
         )
-        sys.stdout.write(
-            json.dumps(
-                result.model_dump(exclude_none=True),
-                ensure_ascii=False,
-                indent=2,
-            )
+        _write_json_payload(
+            result.model_dump(exclude_none=True),
         )
-        sys.stdout.write("\n")
         return 0 if result.ok else 1
 
     if args.command == "supervise-tokened-batch":
@@ -147,15 +161,35 @@ def main(argv: list[str] | None = None) -> int:
                 else None
             ),
         )
-        sys.stdout.write(
-            json.dumps(
-                result.model_dump(exclude_none=True),
-                ensure_ascii=False,
-                indent=2,
-            )
+        _write_json_payload(
+            result.model_dump(exclude_none=True),
         )
-        sys.stdout.write("\n")
         return 0 if result.ok else 1
+
+    if args.command == "review-application-preferences":
+        result = review_recent_application_preferences(
+            db_path=args.db_path,
+            limit=args.limit,
+        )
+        _write_json_payload(
+            result.model_dump(exclude_none=True),
+        )
+        return 0 if result.ok else 1
+
+    if args.command == "build-preference-evidence":
+        result = build_preference_evidence_package_from_file(
+            args.recent_applications,
+            now=args.now,
+        )
+        payload = result.model_dump(exclude_none=True)
+        if args.output:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        _write_json_payload(payload)
+        return 0
 
     parser.error(f"unknown command: {args.command}")
     return 2
@@ -225,15 +259,22 @@ def _write_result_with_observability(
     )
     payload = result.model_dump(exclude_none=True)
     payload["observability"] = observability.model_dump(exclude_none=True)
-    sys.stdout.write(
-        json.dumps(
-            payload,
-            ensure_ascii=False,
-            indent=2,
-        )
-    )
-    sys.stdout.write("\n")
+    _write_json_payload(payload)
     return 0 if result.ok else 1
+
+
+def _write_json_payload(payload) -> None:
+    text = json.dumps(
+        payload,
+        ensure_ascii=False,
+        indent=2,
+    )
+    data = f"{text}\n".encode("utf-8")
+    stdout_buffer = getattr(sys.stdout, "buffer", None)
+    if stdout_buffer is not None:
+        stdout_buffer.write(data)
+    else:  # pragma: no cover - defensive fallback for unusual stdout objects
+        sys.stdout.write(data.decode("utf-8"))
 
 
 def _default_repo_root() -> Path:

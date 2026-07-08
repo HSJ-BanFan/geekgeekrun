@@ -1,0 +1,306 @@
+from __future__ import annotations
+
+import builtins
+import json
+from pathlib import Path
+from typing import Any
+
+from ggr_sidecar.application_preferences import (
+    build_preference_evidence_package,
+    build_preference_evidence_package_from_file,
+)
+from ggr_sidecar.cli import main as cli_main
+
+
+def test_build_preference_evidence_package_separates_tracks_and_counts_signals() -> None:
+    package = build_preference_evidence_package(
+        recent_applications_artifact=recent_applications_artifact(),
+        now="2026-07-08T10:00:00.000Z",
+    )
+
+    assert package.schemaVersion == "preference-evidence-package.v1"
+    assert package.cleanerVersion == "preference-evidence-cleaner.v1"
+    assert package.source.kind == "recent_applications_with_jd"
+    assert package.inputCoverage.recentApplicationsWithJd is True
+    assert package.sampleCounts.totalRecords == 5
+    assert package.sampleCounts.recordsWithJd == 5
+
+    assert package.normalizedCounts.aiLlmAgent["present"] == 3
+    assert package.normalizedCounts.backendData["present"] == 1
+    assert package.normalizedCounts.annotationEvaluation["present"] == 2
+    assert package.normalizedCounts.languageLocalization["present"] == 2
+    assert package.normalizedCounts.remotePartTime["present"] == 2
+    assert package.normalizedCounts.genericNonTarget["present"] == 1
+    assert package.normalizedCounts.city["上海"] == 3
+    assert package.normalizedCounts.city["远程"] == 2
+
+    assert package.clusters.possibleMainTrack[0].id == "cluster-main-ai-backend"
+    assert package.clusters.sideTrack[0].id == "cluster-side-ai-language-evaluation"
+    assert package.clusters.sideTrackOnly[0].id == "cluster-side-only-localization-mtpe"
+    assert package.clusters.downrank[0].id == "cluster-downrank-annotation-evaluation"
+    assert package.clusters.exclude[0].id == "cluster-exclude-generic-non-target"
+
+
+def test_representative_examples_have_deterministic_selection_reasons() -> None:
+    package = build_preference_evidence_package(
+        recent_applications_artifact=recent_applications_artifact(),
+        now="2026-07-08T10:00:00.000Z",
+    )
+
+    reasons = {example.selectionReason for example in package.representativeExamples}
+    assert {"strongest", "boundary", "contradiction"}.issubset(reasons)
+
+    strongest = next(
+        example
+        for example in package.representativeExamples
+        if example.selectionReason == "strongest"
+        and example.clusterId == "cluster-main-ai-backend"
+    )
+    assert strongest.title == "AI Agent 后端开发"
+    assert strongest.normalizedSignals == [
+        "ai_llm_agent",
+        "backend_data",
+    ]
+    assert strongest.evidenceRefs
+
+    boundary = next(
+        example
+        for example in package.representativeExamples
+        if example.selectionReason == "boundary"
+    )
+    assert boundary.title == "AIGC 数据评测实习生"
+    assert "annotation_evaluation" in boundary.normalizedSignals
+
+    contradiction = next(
+        example
+        for example in package.representativeExamples
+        if example.selectionReason == "contradiction"
+    )
+    assert contradiction.title == "客服销售运营"
+    assert contradiction.clusterId == "cluster-exclude-generic-non-target"
+
+    indexed_ids = {entry.id for entry in package.evidenceIndex}
+    for example in package.representativeExamples:
+        assert set(example.evidenceRefs).issubset(indexed_ids)
+
+
+def test_preference_evidence_package_redacts_sensitive_values_and_omits_raw_jd() -> None:
+    raw_artifact = recent_applications_artifact()
+    raw_artifact["records"].append(
+        record(
+            rank=6,
+            conversation_id="conv-short-jd",
+            title="Python 后端",
+            company="Short JD Co",
+            city="上海",
+            position_category="后端开发",
+            jd_text="负责 Python 后端开发",
+        )
+    )
+    package = build_preference_evidence_package(
+        recent_applications_artifact=raw_artifact,
+        now="2026-07-08T10:00:00.000Z",
+    )
+
+    serialized = package.model_dump_json()
+
+    for item in raw_artifact["records"]:
+        assert item["jd"]["text"] not in serialized
+    assert "CANARY_FULL_JOB_DESCRIPTION" not in serialized
+    assert "CANARY_COOKIE_VALUE" not in serialized
+    assert "CANARY_LOCAL_STORAGE_VALUE" not in serialized
+    assert "CANARY_API_KEY_VALUE" not in serialized
+    assert "RAW_SECURITY_ID_SHOULD_NOT_APPEAR" not in serialized
+    assert "C:\\Users\\Meiosis\\secret\\resume.png" not in serialized
+    assert "securityId=" not in serialized
+    assert "cookie=" not in serialized
+    assert "localStorage=" not in serialized
+    assert "apiKey=" not in serialized
+    assert "lastMessage" not in serialized
+
+
+def test_preference_evidence_builder_does_not_import_llm_modules(monkeypatch) -> None:
+    original_import = builtins.__import__
+
+    def guarded_import(
+        name: str,
+        globals_: dict[str, Any] | None = None,
+        locals_: dict[str, Any] | None = None,
+        fromlist: tuple[str, ...] = (),
+        level: int = 0,
+    ):
+        if name.startswith(("openai", "agents")):
+            raise AssertionError(f"unexpected LLM import: {name}")
+        return original_import(name, globals_, locals_, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    package = build_preference_evidence_package(
+        recent_applications_artifact=recent_applications_artifact(),
+        now="2026-07-08T10:00:00.000Z",
+    )
+
+    assert package.preferenceEvidenceUse == (
+        "decision_evidence_only_not_application_authorization"
+    )
+
+
+def test_build_preference_evidence_package_from_file_and_cli(tmp_path: Path) -> None:
+    source_path = tmp_path / "recent-applications.json"
+    output_path = tmp_path / "preference-evidence.json"
+    source_path.write_text(
+        json.dumps(recent_applications_artifact(), ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    package = build_preference_evidence_package_from_file(
+        source_path,
+        now="2026-07-08T10:00:00.000Z",
+    )
+
+    assert package.sourceFingerprint.sha256
+    assert package.source.sourceArtifactIds[0].startswith("recent-applications:")
+
+    exit_code = cli_main(
+        [
+            "build-preference-evidence",
+            "--recent-applications",
+            str(source_path),
+            "--output",
+            str(output_path),
+            "--now",
+            "2026-07-08T10:00:00.000Z",
+        ]
+    )
+
+    assert exit_code == 0
+    written = json.loads(output_path.read_text(encoding="utf-8"))
+    assert written["schemaVersion"] == "preference-evidence-package.v1"
+    assert written["sampleCounts"]["totalRecords"] == 5
+
+
+def recent_applications_artifact() -> dict[str, Any]:
+    return {
+        "schemaVersion": "recent-applications.v1",
+        "ok": True,
+        "command": "recent-applications",
+        "captureMetadata": {
+            "capturedAt": "2026-07-07T10:00:00.000Z",
+            "limit": 100,
+            "includeJd": True,
+            "readOnly": True,
+            "authorization": {
+                "issuesApplicationAuthorization": False,
+                "consumesApplicationAuthorizationToken": False,
+            },
+        },
+        "statusSummary": {
+            "total": 5,
+            "ok": 5,
+            "failed": 0,
+            "blocked": 0,
+            "skipped": 0,
+            "pending": 0,
+            "jd": {"ok": 5, "failed": 0, "blocked": 0, "skipped": 0, "pending": 0},
+            "reasonCodes": {},
+        },
+        "records": [
+            record(
+                rank=1,
+                conversation_id="conv-main",
+                title="AI Agent 后端开发",
+                company="Target Co",
+                city="上海",
+                position_category="后端开发",
+                jd_text=(
+                    "负责 Python FastAPI 服务开发、LLM Agent 工具接入和自动化工作流建设。"
+                    "熟悉 RAG、数据管道和后端服务治理。"
+                    "CANARY_FULL_JOB_DESCRIPTION C:\\Users\\Meiosis\\secret\\resume.png "
+                    "cookie=CANARY_COOKIE_VALUE localStorage=CANARY_LOCAL_STORAGE_VALUE "
+                    "apiKey=CANARY_API_KEY_VALUE"
+                ),
+            ),
+            record(
+                rank=2,
+                conversation_id="conv-boundary",
+                title="AIGC 数据评测实习生",
+                company="Boundary Co",
+                city="上海",
+                position_category="测试",
+                jd_text="负责大模型回答质量评估、数据标注、AIGC 测试和语料整理。",
+            ),
+            record(
+                rank=3,
+                conversation_id="conv-side",
+                title="AI 日语翻译评测兼职",
+                company="Side Co",
+                city="远程",
+                position_category="本地化",
+                jd_text="远程兼职，负责大模型日语翻译评测、LQA、本地化质量检查。",
+            ),
+            record(
+                rank=4,
+                conversation_id="conv-side-only",
+                title="日语 MTPE 远程兼职",
+                company="Localization Co",
+                city="远程",
+                position_category="翻译",
+                jd_text="负责日语翻译、本地化、MTPE、LQA，兼职远程。",
+            ),
+            record(
+                rank=5,
+                conversation_id="conv-exclude",
+                title="客服销售运营",
+                company="Generic Co",
+                city="上海",
+                position_category="运营",
+                jd_text=(
+                    "负责电话销售、客户服务、数据录入和日常运营。"
+                    "https://www.zhipin.com/job_detail/abc.html?securityId="
+                    "RAW_SECURITY_ID_SHOULD_NOT_APPEAR"
+                ),
+            ),
+        ],
+    }
+
+
+def record(
+    *,
+    rank: int,
+    conversation_id: str,
+    title: str,
+    company: str,
+    city: str,
+    position_category: str,
+    jd_text: str,
+) -> dict[str, Any]:
+    return {
+        "rank": rank,
+        "status": "ok",
+        "conversationId": conversation_id,
+        "timestampIso": "2026-07-07T10:00:00.000Z",
+        "title": title,
+        "company": company,
+        "city": city,
+        "positionCategory": position_category,
+        "lastMessage": {
+            "text": "这是一段完整聊天记录，不应进入 Preference Evidence Package",
+            "direction": "boss",
+        },
+        "jobIdentityAnchor": {
+            "jobId": conversation_id,
+            "encryptJobId": conversation_id,
+            "hasSecurityId": True,
+            "securityIdRedacted": "RAW_SECURITY_ID_SHOULD_NOT_APPEAR",
+        },
+        "jd": {
+            "status": "ok",
+            "source": "boss_job_detail_dom",
+            "text": jd_text,
+            "characterCount": len(jd_text),
+            "resolvedUrl": (
+                "https://www.zhipin.com/job_detail/abc.html?"
+                "securityId=RAW_SECURITY_ID_SHOULD_NOT_APPEAR"
+            ),
+        },
+    }
