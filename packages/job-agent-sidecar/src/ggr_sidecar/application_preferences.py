@@ -4,14 +4,17 @@ import re
 import sqlite3
 import hashlib
 import json
+import os
+import urllib.error
+import urllib.request
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .schemas import FlexibleCliModel
+from .schemas import FlexibleCliModel, ValidationFailure
 
 
 class RecentAppliedJob(FlexibleCliModel):
@@ -194,6 +197,482 @@ class PreferenceEvidencePackage(FlexibleCliModel):
     preferenceEvidenceUse: str = (
         "decision_evidence_only_not_application_authorization"
     )
+
+
+PreferenceConfidence = Literal["low", "medium", "high"]
+EvidenceStrengthValue = Literal["missing", "weak", "moderate", "strong"]
+ApplicationPreferenceProfileStatus = Literal[
+    "ok",
+    "evidence_package_error",
+    "llm_unavailable",
+    "llm_error",
+    "parse_error",
+    "schema_error",
+    "invalid_evidence_refs",
+    "write_error",
+]
+
+APPLICATION_PREFERENCE_PROFILE_SCHEMA_VERSION = "application-preference-profile.v1"
+APPLICATION_PREFERENCE_PROFILE_PROMPT_VERSION = (
+    "application-preference-profile.prompt.v1"
+)
+APPLICATION_PREFERENCE_PROFILE_MODEL_SCENE = "application_preference_profile"
+
+
+class StrictPreferenceModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ApplicationPreferenceEvidenceStrength(StrictPreferenceModel):
+    recentApplicationsWithJd: EvidenceStrengthValue
+    candidateStatement: EvidenceStrengthValue
+    capabilityProfile: EvidenceStrengthValue
+    targetJdSamples: EvidenceStrengthValue
+    clarificationAnswers: EvidenceStrengthValue
+
+
+class ApplicationPreferenceItem(StrictPreferenceModel):
+    label: str
+    track: PreferenceTrack
+    rationale: str
+    evidenceRefs: list[str] = Field(min_length=1)
+    confidence: PreferenceConfidence
+    constraints: list[str] = Field(default_factory=list)
+    negativeSignals: list[str] = Field(default_factory=list)
+
+
+class ApplicationPreferenceUncertainty(StrictPreferenceModel):
+    label: str
+    reason: str
+    evidenceRefs: list[str] = Field(default_factory=list)
+    impact: str
+
+
+class ApplicationPreferenceActionSuggestion(StrictPreferenceModel):
+    type: Literal[
+        "search_keyword",
+        "include_signal",
+        "downrank_signal",
+        "side_track_query",
+        "greeting_framing_hint",
+        "resume_framing_hint",
+        "target_jd_sample_request",
+    ]
+    suggestion: str
+    rationale: str
+    evidenceRefs: list[str] = Field(default_factory=list)
+    nonAuthorizing: Literal[True] = True
+    grantsApplicationAuthorization: Literal[False] = False
+
+
+class ApplicationPreferenceFreshnessMetadata(StrictPreferenceModel):
+    promptVersion: str
+    cleanerVersion: str
+    evidencePackageId: str
+    evidencePackageGeneratedAt: str
+    sourceFingerprints: dict[str, str] = Field(default_factory=dict)
+    staleReasons: list[str] = Field(default_factory=list)
+
+
+class ApplicationPreferenceProfile(StrictPreferenceModel):
+    schemaVersion: Literal["application-preference-profile.v1"]
+    profileId: str
+    generatedAt: str
+    modelScene: str = APPLICATION_PREFERENCE_PROFILE_MODEL_SCENE
+    profileConfidence: PreferenceConfidence
+    evidenceStrength: ApplicationPreferenceEvidenceStrength
+    mainTrackPreferences: list[ApplicationPreferenceItem] = Field(default_factory=list)
+    sideTrackPreferences: list[ApplicationPreferenceItem] = Field(default_factory=list)
+    sideTrackOnlyPatterns: list[ApplicationPreferenceItem] = Field(default_factory=list)
+    excludePatterns: list[ApplicationPreferenceItem] = Field(default_factory=list)
+    downrankPatterns: list[ApplicationPreferenceItem] = Field(default_factory=list)
+    uncertainties: list[ApplicationPreferenceUncertainty] = Field(default_factory=list)
+    preferenceActionSuggestions: list[ApplicationPreferenceActionSuggestion] = Field(
+        default_factory=list
+    )
+    summary: str
+    freshnessMetadata: ApplicationPreferenceFreshnessMetadata
+    preferenceEvidenceUse: Literal[
+        "decision_evidence_only_not_application_authorization"
+    ]
+
+
+class ApplicationPreferenceProfileGenerationResult(FlexibleCliModel):
+    ok: bool
+    status: ApplicationPreferenceProfileStatus
+    evidencePackagePath: str
+    outputPath: str | None = None
+    profile: ApplicationPreferenceProfile | None = None
+    validationErrors: list[ValidationFailure] = Field(default_factory=list)
+    error: str | None = None
+
+
+class ApplicationPreferenceProfileValidationError(ValueError):
+    def __init__(
+        self,
+        status: ApplicationPreferenceProfileStatus,
+        validation_errors: list[ValidationFailure],
+    ) -> None:
+        super().__init__(status)
+        self.status = status
+        self.validation_errors = validation_errors
+
+
+class ApplicationPreferenceProfileLlmUnavailable(RuntimeError):
+    pass
+
+
+ApplicationPreferenceProfileLlmClient = Callable[[list[dict[str, str]]], Any]
+
+
+def generate_application_preference_profile_from_file(
+    evidence_package_path: Path | str,
+    *,
+    output_path: Path | str | None = None,
+    llm_client: ApplicationPreferenceProfileLlmClient | None = None,
+    prompt_version: str = APPLICATION_PREFERENCE_PROFILE_PROMPT_VERSION,
+    model_scene: str = APPLICATION_PREFERENCE_PROFILE_MODEL_SCENE,
+) -> ApplicationPreferenceProfileGenerationResult:
+    path = Path(evidence_package_path)
+    output = Path(output_path) if output_path is not None else None
+
+    try:
+        package = PreferenceEvidencePackage.model_validate(
+            json.loads(path.read_text(encoding="utf-8"))
+        )
+    except (OSError, json.JSONDecodeError, ValidationError) as err:
+        return ApplicationPreferenceProfileGenerationResult(
+            ok=False,
+            status="evidence_package_error",
+            evidencePackagePath=str(path),
+            outputPath=str(output) if output is not None else None,
+            validationErrors=(
+                _validation_failures_from_pydantic(err)
+                if isinstance(err, ValidationError)
+                else []
+            ),
+            error=_safe_warning(str(err)),
+        )
+
+    messages = _build_application_preference_profile_messages(
+        package=package,
+        prompt_version=prompt_version,
+        model_scene=model_scene,
+    )
+    client = llm_client or _call_application_preference_profile_llm_from_env
+
+    try:
+        llm_output = client(messages)
+    except ApplicationPreferenceProfileLlmUnavailable as err:
+        return ApplicationPreferenceProfileGenerationResult(
+            ok=False,
+            status="llm_unavailable",
+            evidencePackagePath=str(path),
+            outputPath=str(output) if output is not None else None,
+            error=_safe_warning(str(err)),
+        )
+    except Exception as err:  # pragma: no cover - provider/network dependent
+        return ApplicationPreferenceProfileGenerationResult(
+            ok=False,
+            status="llm_error",
+            evidencePackagePath=str(path),
+            outputPath=str(output) if output is not None else None,
+            error=_safe_warning(str(err)),
+        )
+
+    try:
+        parsed_output = _coerce_llm_json_object(llm_output)
+    except ValueError as err:
+        return ApplicationPreferenceProfileGenerationResult(
+            ok=False,
+            status="parse_error",
+            evidencePackagePath=str(path),
+            outputPath=str(output) if output is not None else None,
+            error=_safe_warning(str(err)),
+        )
+
+    try:
+        profile = ApplicationPreferenceProfile.model_validate(parsed_output)
+        _validate_application_preference_profile(
+            profile=profile,
+            package=package,
+            prompt_version=prompt_version,
+            model_scene=model_scene,
+        )
+    except ApplicationPreferenceProfileValidationError as err:
+        return ApplicationPreferenceProfileGenerationResult(
+            ok=False,
+            status=err.status,
+            evidencePackagePath=str(path),
+            outputPath=str(output) if output is not None else None,
+            validationErrors=err.validation_errors,
+        )
+    except ValidationError as err:
+        return ApplicationPreferenceProfileGenerationResult(
+            ok=False,
+            status="schema_error",
+            evidencePackagePath=str(path),
+            outputPath=str(output) if output is not None else None,
+            validationErrors=_validation_failures_from_pydantic(err),
+        )
+
+    if output is not None:
+        try:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(
+                json.dumps(
+                    profile.model_dump(exclude_none=True),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        except OSError as err:
+            return ApplicationPreferenceProfileGenerationResult(
+                ok=False,
+                status="write_error",
+                evidencePackagePath=str(path),
+                outputPath=str(output),
+                error=_safe_warning(str(err)),
+            )
+
+    return ApplicationPreferenceProfileGenerationResult(
+        ok=True,
+        status="ok",
+        evidencePackagePath=str(path),
+        outputPath=str(output) if output is not None else None,
+        profile=profile,
+    )
+
+
+def _build_application_preference_profile_messages(
+    *,
+    package: PreferenceEvidencePackage,
+    prompt_version: str,
+    model_scene: str,
+) -> list[dict[str, str]]:
+    allowed_refs = [entry.id for entry in package.evidenceIndex]
+    schema = ApplicationPreferenceProfile.model_json_schema()
+    payload = {
+        "preferenceEvidencePackage": package.model_dump(exclude_none=True),
+        "requiredMetadata": {
+            "schemaVersion": APPLICATION_PREFERENCE_PROFILE_SCHEMA_VERSION,
+            "promptVersion": prompt_version,
+            "modelScene": model_scene,
+            "cleanerVersion": package.cleanerVersion,
+            "evidencePackageId": package.packageId,
+            "evidencePackageGeneratedAt": package.generatedAt,
+            "sourceFingerprints": package.sourceFingerprints,
+            "preferenceEvidenceUse": (
+                "decision_evidence_only_not_application_authorization"
+            ),
+        },
+        "allowedEvidenceRefs": allowed_refs,
+        "jsonSchema": schema,
+    }
+    return [
+        {
+            "role": "system",
+            "content": "\n".join(
+                [
+                    "Generate an Application Preference Profile as strict JSON.",
+                    "Use only the redacted Preference Evidence Package.",
+                    "Every preference item evidenceRefs value must come from allowedEvidenceRefs.",
+                    "Do not invent evidence references. Put unsupported claims in uncertainties.",
+                    "The profile is Decision Evidence only and grants no Application Authorization.",
+                    "Return only one JSON object and no markdown.",
+                ]
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(payload, ensure_ascii=False),
+        },
+    ]
+
+
+def _call_application_preference_profile_llm_from_env(
+    messages: list[dict[str, str]],
+) -> str:
+    api_key = os.environ.get("GGR_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise ApplicationPreferenceProfileLlmUnavailable(
+            "Set GGR_OPENAI_API_KEY or OPENAI_API_KEY to generate a profile."
+        )
+    model = os.environ.get("GGR_OPENAI_MODEL") or os.environ.get("OPENAI_MODEL")
+    if not model:
+        raise ApplicationPreferenceProfileLlmUnavailable(
+            "Set GGR_OPENAI_MODEL or OPENAI_MODEL to generate a profile."
+        )
+    base_url = (
+        os.environ.get("GGR_OPENAI_BASE_URL")
+        or os.environ.get("OPENAI_BASE_URL")
+        or "https://api.openai.com/v1"
+    ).rstrip("/")
+    request = urllib.request.Request(
+        f"{base_url}/chat/completions",
+        data=json.dumps(
+            {
+                "model": model,
+                "messages": messages,
+                "temperature": 0.1,
+                "response_format": {"type": "json_object"},
+            },
+            ensure_ascii=False,
+        ).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as err:
+        raise RuntimeError(f"LLM request failed: {err}") from err
+    content = payload.get("choices", [{}])[0].get("message", {}).get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise RuntimeError("LLM response did not include message content.")
+    return content
+
+
+def _coerce_llm_json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        raise ValueError("LLM output must be a JSON object or string.")
+    text = value.strip()
+    if not text:
+        raise ValueError("LLM output was empty.")
+    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, flags=re.IGNORECASE)
+    candidate = fenced.group(1).strip() if fenced else text
+    extracted = _extract_first_json_object(candidate)
+    if extracted is not None:
+        candidate = extracted
+    parsed = json.loads(candidate)
+    if not isinstance(parsed, dict):
+        raise ValueError("LLM JSON output must be an object.")
+    return parsed
+
+
+def _extract_first_json_object(text: str) -> str | None:
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
+
+
+def _validate_application_preference_profile(
+    *,
+    profile: ApplicationPreferenceProfile,
+    package: PreferenceEvidencePackage,
+    prompt_version: str,
+    model_scene: str,
+) -> None:
+    metadata_errors: list[ValidationFailure] = []
+    expected_metadata = {
+        "promptVersion": prompt_version,
+        "cleanerVersion": package.cleanerVersion,
+        "evidencePackageId": package.packageId,
+        "evidencePackageGeneratedAt": package.generatedAt,
+        "sourceFingerprints": package.sourceFingerprints,
+    }
+    for field, expected_value in expected_metadata.items():
+        actual_value = getattr(profile.freshnessMetadata, field)
+        if actual_value != expected_value:
+            metadata_errors.append(
+                ValidationFailure(
+                    loc=["freshnessMetadata", field],
+                    msg="metadata does not match the evidence package",
+                    type="value_error.metadata_mismatch",
+                )
+            )
+    if profile.modelScene != model_scene:
+        metadata_errors.append(
+            ValidationFailure(
+                loc=["modelScene"],
+                msg="modelScene does not match the requested model scene",
+                type="value_error.metadata_mismatch",
+            )
+        )
+    if metadata_errors:
+        raise ApplicationPreferenceProfileValidationError(
+            "schema_error",
+            metadata_errors,
+        )
+
+    ref_errors = _unknown_evidence_ref_errors(profile, package)
+    if ref_errors:
+        raise ApplicationPreferenceProfileValidationError(
+            "invalid_evidence_refs",
+            ref_errors,
+        )
+
+
+def _unknown_evidence_ref_errors(
+    profile: ApplicationPreferenceProfile,
+    package: PreferenceEvidencePackage,
+) -> list[ValidationFailure]:
+    allowed_refs = {entry.id for entry in package.evidenceIndex}
+    errors: list[ValidationFailure] = []
+    for field in [
+        "mainTrackPreferences",
+        "sideTrackPreferences",
+        "sideTrackOnlyPatterns",
+        "excludePatterns",
+        "downrankPatterns",
+        "uncertainties",
+        "preferenceActionSuggestions",
+    ]:
+        values = getattr(profile, field)
+        for item_index, item in enumerate(values):
+            for ref_index, ref in enumerate(item.evidenceRefs):
+                if ref not in allowed_refs:
+                    errors.append(
+                        ValidationFailure(
+                            loc=[field, item_index, "evidenceRefs", ref_index],
+                            msg=f"unknown evidenceRef: {ref}",
+                            type="value_error.unknown_evidence_ref",
+                        )
+                    )
+    return errors
+
+
+def _validation_failures_from_pydantic(err: ValidationError) -> list[ValidationFailure]:
+    failures: list[ValidationFailure] = []
+    for item in err.errors():
+        failures.append(
+            ValidationFailure(
+                loc=list(item.get("loc") or []),
+                msg=str(item.get("msg") or ""),
+                type=str(item.get("type") or "value_error"),
+            )
+        )
+    return failures
 
 
 def build_preference_evidence_package_from_file(

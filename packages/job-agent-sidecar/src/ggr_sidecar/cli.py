@@ -11,6 +11,7 @@ from .application_loop import (
 )
 from .application_preferences import (
     build_preference_evidence_package_from_file,
+    generate_application_preference_profile_from_file,
     review_recent_application_preferences,
 )
 from .approval import make_terminal_approval_requester
@@ -65,6 +66,18 @@ def build_parser() -> argparse.ArgumentParser:
     preference_evidence.add_argument("--recent-applications", type=Path, required=True)
     preference_evidence.add_argument("--output", type=Path)
     preference_evidence.add_argument("--now")
+
+    preference_profile = subparsers.add_parser(
+        "generate-application-preference-profile",
+        help="Generate and validate an Application Preference Profile artifact.",
+    )
+    preference_profile.add_argument("--evidence-package", type=Path, required=True)
+    preference_profile.add_argument("--output", type=Path, required=True)
+    preference_profile.add_argument(
+        "--llm-response",
+        type=Path,
+        help="Read a pre-generated model JSON response from a file instead of calling the configured LLM.",
+    )
 
     return parser
 
@@ -190,6 +203,18 @@ def main(argv: list[str] | None = None) -> int:
             )
         _write_json_payload(payload)
         return 0
+
+    if args.command == "generate-application-preference-profile":
+        llm_client = None
+        if args.llm_response is not None:
+            llm_client = lambda _messages: args.llm_response.read_text(encoding="utf-8")
+        result = generate_application_preference_profile_from_file(
+            args.evidence_package,
+            output_path=args.output,
+            llm_client=llm_client,
+        )
+        _write_json_payload(result.model_dump(exclude_none=True))
+        return 0 if result.ok else 1
 
     parser.error(f"unknown command: {args.command}")
     return 2
