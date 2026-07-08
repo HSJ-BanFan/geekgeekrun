@@ -6,8 +6,10 @@ from pathlib import Path
 from typing import Any
 
 from ggr_sidecar.application_preferences import (
+    build_preference_clarification_answer,
     build_preference_evidence_package,
     build_preference_evidence_package_from_file,
+    persist_preference_clarification_answer_to_file,
 )
 from ggr_sidecar.cli import main as cli_main
 
@@ -177,6 +179,68 @@ def test_build_preference_evidence_package_from_file_and_cli(tmp_path: Path) -> 
     written = json.loads(output_path.read_text(encoding="utf-8"))
     assert written["schemaVersion"] == "preference-evidence-package.v1"
     assert written["sampleCounts"]["totalRecords"] == 5
+
+
+def test_clarification_answers_are_persisted_and_indexed_as_evidence(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "recent-applications.json"
+    answers_path = tmp_path / "clarification-answers.json"
+    output_path = tmp_path / "preference-evidence.json"
+    source_path.write_text(
+        json.dumps(recent_applications_artifact(), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    answer = build_preference_clarification_answer(
+        answer_id="main-track-001",
+        question_text="Should weak AI annotation roles remain only a backup?",
+        recommended_answer_shown="Treat annotation as downrank unless it includes engineering.",
+        user_answer=(
+            "Yes. Prefer Python/LLM backend roles. Contact me at test@example.com "
+            "only outside this artifact."
+        ),
+        affected_fields=["downrankPatterns", "mainTrackPreferences"],
+        created_at="2026-07-08T10:02:00.000Z",
+    )
+
+    persisted = persist_preference_clarification_answer_to_file(answers_path, answer)
+    package = build_preference_evidence_package_from_file(
+        source_path,
+        clarification_answers_path=answers_path,
+        now="2026-07-08T10:03:00.000Z",
+    )
+
+    assert persisted.answers[0].evidenceRef == "ev-clarification-main-track-001"
+    assert package.inputCoverage.clarificationAnswers is True
+    assert package.sourceFingerprints["clarificationAnswers"]
+    clarification_entries = [
+        entry for entry in package.evidenceIndex if entry.type == "clarification_answer"
+    ]
+    assert [entry.id for entry in clarification_entries] == [
+        "ev-clarification-main-track-001"
+    ]
+    assert clarification_entries[0].sourceRecordId == "main-track-001"
+    assert "Python/LLM backend" in (clarification_entries[0].redactedValue or "")
+    assert "test@example.com" not in package.model_dump_json()
+
+    exit_code = cli_main(
+        [
+            "build-preference-evidence",
+            "--recent-applications",
+            str(source_path),
+            "--clarification-answers",
+            str(answers_path),
+            "--output",
+            str(output_path),
+            "--now",
+            "2026-07-08T10:03:00.000Z",
+        ]
+    )
+
+    assert exit_code == 0
+    written = json.loads(output_path.read_text(encoding="utf-8"))
+    assert written["inputCoverage"]["clarificationAnswers"] is True
+    assert written["evidenceIndex"][-1]["id"] == "ev-clarification-main-track-001"
 
 
 def recent_applications_artifact() -> dict[str, Any]:

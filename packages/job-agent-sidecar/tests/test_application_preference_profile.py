@@ -5,8 +5,11 @@ from pathlib import Path
 from typing import Any
 
 from ggr_sidecar.application_preferences import (
+    build_preference_clarification_answer,
     build_preference_evidence_package,
+    evaluate_application_preference_profile_staleness,
     generate_application_preference_profile_from_file,
+    propose_preference_clarification_question,
 )
 from ggr_sidecar.cli import main as cli_main
 
@@ -162,12 +165,122 @@ def test_generate_application_preference_profile_cli_accepts_response_file(
     assert written["profileId"] == "app-pref-test"
 
 
-def write_evidence_package(tmp_path: Path) -> Path:
+def test_persisted_clarification_answer_can_support_refreshed_profile(
+    tmp_path: Path,
+) -> None:
+    evidence_path = write_evidence_package(
+        tmp_path,
+        clarification_user_answer=(
+            "Keep annotation roles downranked unless they include Python tooling."
+        ),
+    )
+    output_path = tmp_path / "application-preference-profile-refreshed.json"
+
+    result = generate_application_preference_profile_from_file(
+        evidence_path,
+        output_path=output_path,
+        llm_client=lambda _messages: valid_profile_payload(
+            evidence_path,
+            include_clarification_ref=True,
+        ),
+    )
+
+    assert result.ok is True
+    written = json.loads(output_path.read_text(encoding="utf-8"))
+    clarification_ref = "ev-clarification-main-track-001"
+    assert written["freshnessMetadata"]["sourceFingerprints"]["clarificationAnswers"]
+    assert (
+        clarification_ref
+        in written["downrankPatterns"][0]["evidenceRefs"]
+    )
+
+
+def test_profile_is_stale_when_clarification_answer_changes(tmp_path: Path) -> None:
+    original_evidence_path = write_evidence_package(
+        tmp_path,
+        file_name="preference-evidence-original.json",
+        clarification_user_answer="Downrank annotation unless it includes Python tooling.",
+    )
+    profile_path = tmp_path / "profile.json"
+    result = generate_application_preference_profile_from_file(
+        original_evidence_path,
+        output_path=profile_path,
+        llm_client=lambda _messages: valid_profile_payload(
+            original_evidence_path,
+            include_clarification_ref=True,
+        ),
+    )
+    assert result.ok is True
+
+    same_package = json.loads(original_evidence_path.read_text(encoding="utf-8"))
+    unchanged = evaluate_application_preference_profile_staleness(
+        profile_path,
+        same_package,
+    )
+    assert unchanged.stale is False
+
+    changed_evidence_path = write_evidence_package(
+        tmp_path,
+        file_name="preference-evidence-changed.json",
+        clarification_user_answer="Actually accept annotation roles as side-track work.",
+    )
+    changed_package = json.loads(changed_evidence_path.read_text(encoding="utf-8"))
+    stale = evaluate_application_preference_profile_staleness(
+        profile_path,
+        changed_package,
+    )
+
+    assert stale.stale is True
+    assert "source_fingerprint_changed:clarificationAnswers" in stale.staleReasons
+    assert "evidence_package_id_changed" in stale.staleReasons
+
+
+def test_preference_clarification_question_uses_one_profile_uncertainty(
+    tmp_path: Path,
+) -> None:
+    evidence_path = write_evidence_package(tmp_path)
+    profile = valid_profile_payload(evidence_path)
+    package = json.loads(evidence_path.read_text(encoding="utf-8"))
+
+    question = propose_preference_clarification_question(profile, package)
+
+    assert question is not None
+    assert question.reason == "profile_uncertainty"
+    assert question.affectedFields == ["uncertainties"]
+    assert "Candidate statement missing" in question.questionText
+
+
+def write_evidence_package(
+    tmp_path: Path,
+    *,
+    file_name: str = "preference-evidence-package.json",
+    clarification_user_answer: str | None = None,
+) -> Path:
+    clarification_answers = None
+    if clarification_user_answer is not None:
+        clarification_answers = {
+            "schemaVersion": "preference-clarification-answers.v1",
+            "answers": [
+                build_preference_clarification_answer(
+                    answer_id="main-track-001",
+                    question_text=(
+                        "Should weak AI annotation roles remain only a backup?"
+                    ),
+                    recommended_answer_shown=(
+                        "Treat annotation as downrank unless it includes engineering."
+                    ),
+                    user_answer=clarification_user_answer,
+                    affected_fields=["downrankPatterns", "mainTrackPreferences"],
+                    created_at="2026-07-08T10:02:00.000Z",
+                ).model_dump(exclude_none=True)
+            ],
+        }
     package = build_preference_evidence_package(
         recent_applications_artifact=recent_applications_artifact(),
+        clarification_answers_artifact=clarification_answers,
         now="2026-07-08T10:00:00.000Z",
     )
-    path = tmp_path / "preference-evidence-package.json"
+    path = tmp_path / file_name
     path.write_text(
         json.dumps(package.model_dump(exclude_none=True), ensure_ascii=False),
         encoding="utf-8",
@@ -175,9 +288,21 @@ def write_evidence_package(tmp_path: Path) -> Path:
     return path
 
 
-def valid_profile_payload(evidence_path: Path) -> dict[str, Any]:
+def valid_profile_payload(
+    evidence_path: Path,
+    *,
+    include_clarification_ref: bool = False,
+) -> dict[str, Any]:
     package = json.loads(evidence_path.read_text(encoding="utf-8"))
     refs = [entry["id"] for entry in package["evidenceIndex"]]
+    clarification_refs = [
+        entry["id"]
+        for entry in package["evidenceIndex"]
+        if entry["type"] == "clarification_answer"
+    ]
+    downrank_refs = refs[2:4]
+    if include_clarification_ref:
+        downrank_refs = [*downrank_refs, *clarification_refs]
     return {
         "schemaVersion": "application-preference-profile.v1",
         "profileId": "app-pref-test",
@@ -224,7 +349,7 @@ def valid_profile_payload(evidence_path: Path) -> dict[str, Any]:
             preference_item(
                 label="Weak AI annotation or audit work",
                 track="downrank",
-                refs=refs[2:4],
+                refs=downrank_refs,
                 negative_signals=["limited engineering growth"],
             )
         ],

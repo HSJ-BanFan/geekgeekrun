@@ -114,6 +114,23 @@ class SourceFingerprint(FlexibleCliModel):
     sha256: str
 
 
+class PreferenceClarificationAnswer(FlexibleCliModel):
+    answerId: str
+    questionText: str
+    recommendedAnswerShown: str
+    userAnswer: str
+    affectedFields: list[str] = Field(default_factory=list)
+    createdAt: str
+    evidenceRef: str
+
+
+class PreferenceClarificationAnswersArtifact(FlexibleCliModel):
+    schemaVersion: Literal["preference-clarification-answers.v1"] = (
+        "preference-clarification-answers.v1"
+    )
+    answers: list[PreferenceClarificationAnswer] = Field(default_factory=list)
+
+
 class PreferenceNormalizedCounts(FlexibleCliModel):
     titleSignals: dict[str, int] = Field(default_factory=dict)
     categorySignals: dict[str, int] = Field(default_factory=dict)
@@ -130,7 +147,7 @@ class PreferenceNormalizedCounts(FlexibleCliModel):
 
 class PreferenceEvidenceIndexEntry(FlexibleCliModel):
     id: str
-    type: Literal["record_summary", "jd_snippet"]
+    type: Literal["record_summary", "jd_snippet", "clarification_answer"]
     sourceRecordId: str
     recordRank: int | None = None
     field: str
@@ -307,6 +324,23 @@ class ApplicationPreferenceProfileGenerationResult(FlexibleCliModel):
     error: str | None = None
 
 
+class ApplicationPreferenceProfileStalenessResult(FlexibleCliModel):
+    stale: bool
+    staleReasons: list[str] = Field(default_factory=list)
+    profileEvidencePackageId: str | None = None
+    currentEvidencePackageId: str | None = None
+    profileSourceFingerprints: dict[str, str] = Field(default_factory=dict)
+    currentSourceFingerprints: dict[str, str] = Field(default_factory=dict)
+
+
+class PreferenceClarificationQuestion(FlexibleCliModel):
+    questionText: str
+    recommendedAnswerShown: str
+    affectedFields: list[str] = Field(default_factory=list)
+    sourceEvidenceRefs: list[str] = Field(default_factory=list)
+    reason: str
+
+
 class ApplicationPreferenceProfileValidationError(ValueError):
     def __init__(
         self,
@@ -323,6 +357,124 @@ class ApplicationPreferenceProfileLlmUnavailable(RuntimeError):
 
 
 ApplicationPreferenceProfileLlmClient = Callable[[list[dict[str, str]]], Any]
+
+
+def build_preference_clarification_answer(
+    *,
+    answer_id: str,
+    question_text: str,
+    recommended_answer_shown: str,
+    user_answer: str,
+    affected_fields: list[str],
+    created_at: str | datetime | None = None,
+) -> PreferenceClarificationAnswer:
+    safe_answer_id = _stable_identifier(answer_id, fallback_prefix="answer")
+    return PreferenceClarificationAnswer(
+        answerId=safe_answer_id,
+        questionText=_safe_preference_text(question_text, 300) or "",
+        recommendedAnswerShown=(
+            _safe_preference_text(recommended_answer_shown, 300) or ""
+        ),
+        userAnswer=_safe_preference_text(user_answer, 600) or "",
+        affectedFields=[
+            _stable_identifier(field, fallback_prefix="field")
+            for field in affected_fields
+            if _string(field)
+        ][:12],
+        createdAt=_iso_now(created_at),
+        evidenceRef=f"ev-clarification-{safe_answer_id}",
+    )
+
+
+def persist_preference_clarification_answer_to_file(
+    output_path: Path | str,
+    answer: PreferenceClarificationAnswer | dict[str, Any],
+) -> PreferenceClarificationAnswersArtifact:
+    path = Path(output_path)
+    new_answer = PreferenceClarificationAnswer.model_validate(answer)
+    if path.exists():
+        artifact = _parse_clarification_answers_artifact(
+            json.loads(path.read_text(encoding="utf-8"))
+        )
+        answers = [
+            existing
+            for existing in artifact.answers
+            if existing.answerId != new_answer.answerId
+        ]
+    else:
+        answers = []
+    artifact = PreferenceClarificationAnswersArtifact(
+        answers=[*answers, new_answer],
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(artifact.model_dump(exclude_none=True), ensure_ascii=False, indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+    return artifact
+
+
+def evaluate_application_preference_profile_staleness(
+    profile: ApplicationPreferenceProfile | dict[str, Any] | Path | str,
+    current_package: PreferenceEvidencePackage | dict[str, Any] | Path | str,
+) -> ApplicationPreferenceProfileStalenessResult:
+    parsed_profile = _coerce_application_preference_profile(profile)
+    package = _coerce_preference_evidence_package(current_package)
+    metadata = parsed_profile.freshnessMetadata
+    reasons: list[str] = []
+    if metadata.evidencePackageId != package.packageId:
+        reasons.append("evidence_package_id_changed")
+    if metadata.cleanerVersion != package.cleanerVersion:
+        reasons.append("cleaner_version_changed")
+    for key in sorted(
+        set(metadata.sourceFingerprints).union(package.sourceFingerprints)
+    ):
+        if metadata.sourceFingerprints.get(key) != package.sourceFingerprints.get(key):
+            reasons.append(f"source_fingerprint_changed:{key}")
+    return ApplicationPreferenceProfileStalenessResult(
+        stale=bool(reasons),
+        staleReasons=reasons,
+        profileEvidencePackageId=metadata.evidencePackageId,
+        currentEvidencePackageId=package.packageId,
+        profileSourceFingerprints=metadata.sourceFingerprints,
+        currentSourceFingerprints=package.sourceFingerprints,
+    )
+
+
+def propose_preference_clarification_question(
+    profile: ApplicationPreferenceProfile | dict[str, Any] | Path | str,
+    package: PreferenceEvidencePackage | dict[str, Any] | Path | str | None = None,
+) -> PreferenceClarificationQuestion | None:
+    parsed_profile = _coerce_application_preference_profile(profile)
+    if parsed_profile.uncertainties:
+        uncertainty = parsed_profile.uncertainties[0]
+        return PreferenceClarificationQuestion(
+            questionText=(
+                f"{uncertainty.label}: {uncertainty.impact} "
+                "Which preference should the refreshed profile use?"
+            ),
+            recommendedAnswerShown=uncertainty.reason,
+            affectedFields=["uncertainties"],
+            sourceEvidenceRefs=uncertainty.evidenceRefs,
+            reason="profile_uncertainty",
+        )
+    if package is not None:
+        parsed_package = _coerce_preference_evidence_package(package)
+        if parsed_package.missingDataSignals:
+            signal = parsed_package.missingDataSignals[0]
+            return PreferenceClarificationQuestion(
+                questionText=(
+                    f"{signal.label} What should the refreshed profile assume?"
+                ),
+                recommendedAnswerShown=(
+                    "State only the preference correction that would change planning."
+                ),
+                affectedFields=["requestedEvidence", "uncertainties"],
+                sourceEvidenceRefs=signal.evidenceRefs,
+                reason="evidence_package_gap",
+            )
+    return None
 
 
 def generate_application_preference_profile_from_file(
@@ -678,14 +830,21 @@ def _validation_failures_from_pydantic(err: ValidationError) -> list[ValidationF
 def build_preference_evidence_package_from_file(
     recent_applications_path: Path | str,
     *,
+    clarification_answers_path: Path | str | None = None,
     now: str | datetime | None = None,
 ) -> PreferenceEvidencePackage:
     path = Path(recent_applications_path)
     raw = path.read_bytes()
     artifact = json.loads(raw.decode("utf-8"))
+    clarification_artifact = None
+    if clarification_answers_path is not None:
+        clarification_path = Path(clarification_answers_path)
+        clarification_raw = clarification_path.read_bytes()
+        clarification_artifact = json.loads(clarification_raw.decode("utf-8"))
     return build_preference_evidence_package(
         recent_applications_artifact=artifact,
         source_bytes=raw,
+        clarification_answers_artifact=clarification_artifact,
         now=now,
     )
 
@@ -694,9 +853,30 @@ def build_preference_evidence_package(
     *,
     recent_applications_artifact: dict[str, Any],
     source_bytes: bytes | None = None,
+    clarification_answers_artifact: (
+        PreferenceClarificationAnswersArtifact | dict[str, Any] | None
+    ) = None,
     now: str | datetime | None = None,
 ) -> PreferenceEvidencePackage:
-    source_hash = _source_sha256(recent_applications_artifact, source_bytes)
+    recent_applications_hash = _source_sha256(
+        recent_applications_artifact,
+        source_bytes,
+    )
+    clarification_answers = _normalize_clarification_answers(
+        clarification_answers_artifact
+    )
+    clarification_answers_hash = (
+        _source_sha256(
+            _clarification_answers_fingerprint_payload(clarification_answers),
+            None,
+        )
+        if clarification_answers
+        else None
+    )
+    source_fingerprints = {"recentApplications": recent_applications_hash}
+    if clarification_answers_hash is not None:
+        source_fingerprints["clarificationAnswers"] = clarification_answers_hash
+    source_hash = _combined_source_hash(source_fingerprints)
     records = [
         _normalize_preference_record(record, index)
         for index, record in enumerate(
@@ -707,11 +887,15 @@ def build_preference_evidence_package(
             start=1,
         )
     ]
-    evidence_index = _build_evidence_index(records)
+    evidence_index = _build_evidence_index(records, clarification_answers)
     cluster_state = _build_preference_clusters(records)
     representatives = _build_representative_examples(cluster_state)
     clusters = _materialize_cluster_groups(cluster_state, representatives)
-    source = _build_preference_source(recent_applications_artifact, source_hash)
+    source = _build_preference_source(
+        recent_applications_artifact,
+        recent_applications_hash,
+        clarification_answers_hash=clarification_answers_hash,
+    )
 
     return PreferenceEvidencePackage(
         packageId=f"pep-{source_hash[:16]}",
@@ -719,12 +903,13 @@ def build_preference_evidence_package(
         source=source,
         inputCoverage=PreferenceInputCoverage(
             recentApplicationsWithJd=any(record["has_jd"] for record in records),
+            clarificationAnswers=bool(clarification_answers),
             recordsTotal=len(records),
             recordsWithJd=sum(1 for record in records if record["has_jd"]),
         ),
         sampleCounts=_build_sample_counts(recent_applications_artifact, records),
         sourceFingerprint=SourceFingerprint(sha256=source_hash),
-        sourceFingerprints={"recentApplications": source_hash},
+        sourceFingerprints=source_fingerprints,
         normalizedCounts=_build_normalized_counts(records),
         clusters=clusters,
         representativeExamples=representatives,
@@ -822,6 +1007,7 @@ def _normalize_preference_record(record: dict[str, Any], index: int) -> dict[str
 
 def _build_evidence_index(
     records: list[dict[str, Any]],
+    clarification_answers: list[PreferenceClarificationAnswer] | None = None,
 ) -> list[PreferenceEvidenceIndexEntry]:
     entries: list[PreferenceEvidenceIndexEntry] = []
     for record in records:
@@ -854,6 +1040,26 @@ def _build_evidence_index(
                     signalIds=record["signals"],
                 )
             )
+    for answer in clarification_answers or []:
+        entries.append(
+            PreferenceEvidenceIndexEntry(
+                id=answer.evidenceRef,
+                type="clarification_answer",
+                sourceRecordId=answer.answerId,
+                field="clarificationAnswer.userAnswer",
+                redactedValue=_format_clarification_answer_evidence(answer),
+                signalIds=_extract_preference_signal_ids(
+                    " ".join(
+                        [
+                            answer.questionText,
+                            answer.recommendedAnswerShown,
+                            answer.userAnswer,
+                            " ".join(answer.affectedFields),
+                        ]
+                    )
+                ),
+            )
+        )
     return entries
 
 
@@ -1101,14 +1307,21 @@ def _is_boundary_signal_set(signals: set[str]) -> bool:
 def _build_preference_source(
     artifact: dict[str, Any],
     source_hash: str,
+    *,
+    clarification_answers_hash: str | None = None,
 ) -> PreferenceSourceMetadata:
     metadata = artifact.get("captureMetadata") or {}
     authorization = metadata.get("authorization") or {}
+    source_artifact_ids = [f"recent-applications:{source_hash[:16]}"]
+    if clarification_answers_hash is not None:
+        source_artifact_ids.append(
+            f"preference-clarification-answers:{clarification_answers_hash[:16]}"
+        )
     return PreferenceSourceMetadata(
         artifactSchemaVersion=_string(artifact.get("schemaVersion")),
         capturedAt=_string(metadata.get("capturedAt")),
         readOnly=metadata.get("readOnly") if isinstance(metadata.get("readOnly"), bool) else None,
-        sourceArtifactIds=[f"recent-applications:{source_hash[:16]}"],
+        sourceArtifactIds=source_artifact_ids,
         authorization={
             "issuesApplicationAuthorization": bool(
                 authorization.get("issuesApplicationAuthorization")
@@ -1331,6 +1544,134 @@ def _preference_source_record_id(record: dict[str, Any], index: int) -> str:
         or f"rank-{index}"
     )
     return _safe_preference_text(value, 120) or f"rank-{index}"
+
+
+def _parse_clarification_answers_artifact(
+    value: PreferenceClarificationAnswersArtifact | dict[str, Any] | list[Any],
+) -> PreferenceClarificationAnswersArtifact:
+    if isinstance(value, PreferenceClarificationAnswersArtifact):
+        return value
+    if isinstance(value, list):
+        raw_answers = value
+    elif isinstance(value, dict) and isinstance(value.get("answers"), list):
+        raw_answers = value.get("answers") or []
+    elif isinstance(value, dict) and "answerId" in value:
+        raw_answers = [value]
+    else:
+        raw_answers = []
+    return PreferenceClarificationAnswersArtifact(
+        answers=[
+            _coerce_clarification_answer(item, index)
+            for index, item in enumerate(raw_answers, start=1)
+        ]
+    )
+
+
+def _normalize_clarification_answers(
+    value: PreferenceClarificationAnswersArtifact | dict[str, Any] | None,
+) -> list[PreferenceClarificationAnswer]:
+    if value is None:
+        return []
+    artifact = _parse_clarification_answers_artifact(value)
+    return sorted(
+        artifact.answers,
+        key=lambda answer: (answer.createdAt, answer.answerId),
+    )
+
+
+def _coerce_clarification_answer(
+    value: Any,
+    index: int,
+) -> PreferenceClarificationAnswer:
+    if isinstance(value, PreferenceClarificationAnswer):
+        return value
+    raw = value if isinstance(value, dict) else {}
+    answer_id = _string(raw.get("answerId")) or f"answer-{index:03d}"
+    affected_fields = raw.get("affectedFields")
+    if not isinstance(affected_fields, list):
+        affected_fields = []
+    return build_preference_clarification_answer(
+        answer_id=answer_id,
+        question_text=_string(raw.get("questionText")) or "",
+        recommended_answer_shown=_string(raw.get("recommendedAnswerShown")) or "",
+        user_answer=_string(raw.get("userAnswer")) or "",
+        affected_fields=[str(field) for field in affected_fields],
+        created_at=_string(raw.get("createdAt")),
+    )
+
+
+def _format_clarification_answer_evidence(
+    answer: PreferenceClarificationAnswer,
+) -> str:
+    affected = ", ".join(answer.affectedFields)
+    return _clip(
+        " | ".join(
+            item
+            for item in [
+                f"Question: {answer.questionText}",
+                f"Recommended: {answer.recommendedAnswerShown}",
+                f"Answer: {answer.userAnswer}",
+                f"Affects: {affected}" if affected else "",
+            ]
+            if item
+        ),
+        900,
+    )
+
+
+def _clarification_answers_fingerprint_payload(
+    answers: list[PreferenceClarificationAnswer],
+) -> dict[str, Any]:
+    return {
+        "schemaVersion": "preference-clarification-answers.v1",
+        "answers": [
+            answer.model_dump(exclude_none=True)
+            for answer in sorted(answers, key=lambda item: item.answerId)
+        ],
+    }
+
+
+def _combined_source_hash(source_fingerprints: dict[str, str]) -> str:
+    payload = json.dumps(
+        source_fingerprints,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _coerce_application_preference_profile(
+    value: ApplicationPreferenceProfile | dict[str, Any] | Path | str,
+) -> ApplicationPreferenceProfile:
+    if isinstance(value, ApplicationPreferenceProfile):
+        return value
+    if isinstance(value, (Path, str)):
+        return ApplicationPreferenceProfile.model_validate(
+            json.loads(Path(value).read_text(encoding="utf-8"))
+        )
+    return ApplicationPreferenceProfile.model_validate(value)
+
+
+def _coerce_preference_evidence_package(
+    value: PreferenceEvidencePackage | dict[str, Any] | Path | str,
+) -> PreferenceEvidencePackage:
+    if isinstance(value, PreferenceEvidencePackage):
+        return value
+    if isinstance(value, (Path, str)):
+        return PreferenceEvidencePackage.model_validate(
+            json.loads(Path(value).read_text(encoding="utf-8"))
+        )
+    return PreferenceEvidencePackage.model_validate(value)
+
+
+def _stable_identifier(value: Any, *, fallback_prefix: str) -> str:
+    raw = _string(value) or ""
+    normalized = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw).strip("-_.")
+    if normalized:
+        return normalized[:80]
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+    return f"{fallback_prefix}-{digest}"
 
 
 def _safe_preference_text(value: Any, max_length: int) -> str:

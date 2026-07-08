@@ -10,8 +10,12 @@ from .application_loop import (
     run_single_job_application_loop,
 )
 from .application_preferences import (
+    build_preference_clarification_answer,
     build_preference_evidence_package_from_file,
+    evaluate_application_preference_profile_staleness,
     generate_application_preference_profile_from_file,
+    persist_preference_clarification_answer_to_file,
+    propose_preference_clarification_question,
     review_recent_application_preferences,
 )
 from .approval import make_terminal_approval_requester
@@ -64,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Build a redacted Preference Evidence Package from recent applications with JD.",
     )
     preference_evidence.add_argument("--recent-applications", type=Path, required=True)
+    preference_evidence.add_argument("--clarification-answers", type=Path)
     preference_evidence.add_argument("--output", type=Path)
     preference_evidence.add_argument("--now")
 
@@ -78,6 +83,32 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Read a pre-generated model JSON response from a file instead of calling the configured LLM.",
     )
+
+    clarification_answer = subparsers.add_parser(
+        "record-preference-clarification-answer",
+        help="Persist one redacted Preference Clarification Answer artifact record.",
+    )
+    clarification_answer.add_argument("--output", type=Path, required=True)
+    clarification_answer.add_argument("--answer-id", required=True)
+    clarification_answer.add_argument("--question-text", required=True)
+    clarification_answer.add_argument("--recommended-answer", required=True)
+    clarification_answer.add_argument("--user-answer", required=True)
+    clarification_answer.add_argument("--affected-field", action="append", default=[])
+    clarification_answer.add_argument("--created-at")
+
+    clarification_question = subparsers.add_parser(
+        "clarify-application-preferences",
+        help="Emit one targeted preference clarification question from profile uncertainty.",
+    )
+    clarification_question.add_argument("--profile", type=Path, required=True)
+    clarification_question.add_argument("--evidence-package", type=Path)
+
+    profile_freshness = subparsers.add_parser(
+        "check-application-preference-profile-freshness",
+        help="Check whether a profile is stale against a current evidence package.",
+    )
+    profile_freshness.add_argument("--profile", type=Path, required=True)
+    profile_freshness.add_argument("--evidence-package", type=Path, required=True)
 
     return parser
 
@@ -192,6 +223,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "build-preference-evidence":
         result = build_preference_evidence_package_from_file(
             args.recent_applications,
+            clarification_answers_path=args.clarification_answers,
             now=args.now,
         )
         payload = result.model_dump(exclude_none=True)
@@ -215,6 +247,45 @@ def main(argv: list[str] | None = None) -> int:
         )
         _write_json_payload(result.model_dump(exclude_none=True))
         return 0 if result.ok else 1
+
+    if args.command == "record-preference-clarification-answer":
+        answer = build_preference_clarification_answer(
+            answer_id=args.answer_id,
+            question_text=args.question_text,
+            recommended_answer_shown=args.recommended_answer,
+            user_answer=args.user_answer,
+            affected_fields=args.affected_field,
+            created_at=args.created_at,
+        )
+        result = persist_preference_clarification_answer_to_file(
+            args.output,
+            answer,
+        )
+        _write_json_payload(result.model_dump(exclude_none=True))
+        return 0
+
+    if args.command == "clarify-application-preferences":
+        result = propose_preference_clarification_question(
+            args.profile,
+            args.evidence_package,
+        )
+        _write_json_payload(
+            {
+                "ok": result is not None,
+                "question": result.model_dump(exclude_none=True)
+                if result is not None
+                else None,
+            }
+        )
+        return 0 if result is not None else 1
+
+    if args.command == "check-application-preference-profile-freshness":
+        result = evaluate_application_preference_profile_staleness(
+            args.profile,
+            args.evidence_package,
+        )
+        _write_json_payload(result.model_dump(exclude_none=True))
+        return 1 if result.stale else 0
 
     parser.error(f"unknown command: {args.command}")
     return 2
