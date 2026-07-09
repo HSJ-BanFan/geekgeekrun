@@ -1,11 +1,17 @@
+import fs from 'node:fs'
 import path from 'node:path'
+import puppeteer from 'puppeteer'
 import { storageFilePath } from '@geekgeekrun/geek-auto-start-chat-with-boss/runtime-file-utils.mjs'
+import { openBrowser } from './browser-actions.mjs'
 import { resolveCityCode } from './city-codes.mjs'
 
 const commandName = 'market-jobs'
 const artifactSchemaVersion = 'market-jobs.v1'
+const searchPageUrl = 'https://www.zhipin.com/web/geek/jobs'
 const defaultLimit = 200
 const maxLimit = 500
+const noNewItemStopThreshold = 2
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 export async function runMarketJobs ({
   fromBrowser = false,
@@ -14,17 +20,17 @@ export async function runMarketJobs ({
   cities = [],
   recallKeywords = [],
   limit = defaultLimit,
+  includeJd = false,
   analyze = false,
   outputPath = '',
   analysisOutputPath = '',
+  headless = false,
+  browserUrl = '',
+  cdpPort = '',
   now = new Date(),
 } = {}) {
   if (!planOnly && !fromBrowser) {
     return failure('FROM_BROWSER_REQUIRED', 'market-jobs requires --from-browser unless --plan-only is set')
-  }
-
-  if (!planOnly) {
-    return failure('MARKET_JOBS_BROWSER_MODE_NOT_IMPLEMENTED', 'browser-backed market-jobs crawl is not implemented in this slice')
   }
 
   const marketKeywords = normalizeList(keywords)
@@ -60,6 +66,13 @@ export async function runMarketJobs ({
     resolvedCities.push({ cityInput, cityCode })
   }
 
+  if (!planOnly && includeJd) {
+    return failure('MARKET_JOBS_INCLUDE_JD_NOT_IMPLEMENTED', '--include-jd for market-jobs is implemented in a later slice')
+  }
+  if (!planOnly && analyze) {
+    return failure('MARKET_JOBS_ANALYSIS_NOT_IMPLEMENTED', '--analyze for browser-backed market-jobs is implemented in a later slice')
+  }
+
   const captureTime = toIso(now)
   const rawArtifactPath = resolveMarketJobsOutputPath(outputPath, captureTime)
   const plannedSamples = buildPlannedSamples({
@@ -67,6 +80,31 @@ export async function runMarketJobs ({
     cities: resolvedCities,
     requestedLimit: limitResult.limit,
   })
+
+  if (!planOnly && plannedSamples.length !== 1) {
+    return failure(
+      'MARKET_JOBS_MULTI_SAMPLE_NOT_IMPLEMENTED',
+      'browser-backed market-jobs currently supports exactly one keyword-city sample'
+    )
+  }
+
+  if (!planOnly) {
+    const opened = await openMarketJobsBrowser({ headless, browserUrl, cdpPort })
+    try {
+      return await runMarketJobsOnOpenPage(opened.page, {
+        keywords: marketKeywords,
+        cities: resolvedCities,
+        limit: limitResult.limit,
+        includeJd,
+        analyze,
+        outputPath: rawArtifactPath,
+        analysisOutputPath,
+        now,
+      })
+    } finally {
+      if (opened.shouldClose) await opened.browser?.close?.().catch(() => {})
+    }
+  }
 
   return {
     ok: true,
@@ -82,6 +120,330 @@ export async function runMarketJobs ({
     analysisArtifactPath: analyze ? resolveAnalysisOutputPath(analysisOutputPath, rawArtifactPath) : null,
     reasonCode: null,
     plannedSamples,
+  }
+}
+
+export async function runMarketJobsOnOpenPage (page, {
+  keywords = [],
+  cities = [],
+  limit = defaultLimit,
+  includeJd = false,
+  analyze = false,
+  outputPath = '',
+  analysisOutputPath = '',
+  navigationSettleMs = 5000,
+  scrollSettleMs = 1500,
+  now = new Date(),
+} = {}) {
+  const marketKeywords = normalizeList(keywords)
+  const resolvedCities = normalizeResolvedCities(cities)
+  const limitResult = normalizeLimit(limit)
+  if (!limitResult.ok) {
+    return {
+      ...failure(limitResult.reasonCode, limitResult.error),
+      maxLimit,
+    }
+  }
+  if (includeJd) {
+    return failure('MARKET_JOBS_INCLUDE_JD_NOT_IMPLEMENTED', '--include-jd for market-jobs is implemented in a later slice')
+  }
+  if (analyze) {
+    return failure('MARKET_JOBS_ANALYSIS_NOT_IMPLEMENTED', '--analyze for browser-backed market-jobs is implemented in a later slice')
+  }
+
+  const plannedSamples = buildPlannedSamples({
+    keywords: marketKeywords,
+    cities: resolvedCities,
+    requestedLimit: limitResult.limit,
+  })
+  if (plannedSamples.length !== 1) {
+    return failure(
+      'MARKET_JOBS_MULTI_SAMPLE_NOT_IMPLEMENTED',
+      'browser-backed market-jobs currently supports exactly one keyword-city sample'
+    )
+  }
+
+  const captureTime = toIso(now)
+  const rawArtifactPath = resolveMarketJobsOutputPath(outputPath, captureTime)
+  const artifact = createBaseArtifact({
+    captureTime,
+    keywords: marketKeywords,
+    cities: resolvedCities,
+    requestedLimit: limitResult.limit,
+    includeJd,
+  })
+  await writeArtifact(rawArtifactPath, artifact)
+
+  const sample = {
+    ...plannedSamples[0],
+    status: 'pending',
+    reasonCode: null,
+    capturedCount: 0,
+    dedupedJobCount: 0,
+    scrollCount: 0,
+    noNewItemCount: 0,
+    startedAt: captureTime,
+    endedAt: null,
+  }
+  artifact.samples.push(sample)
+  artifact.statusSummary = summarizeMarketArtifact(artifact)
+  await writeArtifact(rawArtifactPath, artifact)
+
+  await openMarketJobsSearchPage(page, {
+    keyword: sample.keyword,
+    cityCode: sample.cityCode,
+    settleMs: navigationSettleMs,
+  })
+
+  const sampleObservationKeys = new Set()
+  const jobByIdentityKey = new Map()
+  let shouldContinue = true
+
+  while (shouldContinue) {
+    const listResult = await extractMarketJobsListFromPage(page)
+    if (!listResult.ok) {
+      sample.status = isPlatformRiskReason(listResult.reasonCode) ? 'blocked' : 'failed'
+      sample.reasonCode = listResult.reasonCode
+      sample.endedAt = captureTime
+      artifact.ok = false
+      artifact.reasonCode = listResult.reasonCode
+      artifact.statusSummary = summarizeMarketArtifact(artifact)
+      await writeArtifact(rawArtifactPath, artifact)
+      return buildCommandSummary({
+        artifact,
+        rawArtifactPath,
+        analysisArtifactPath: null,
+      })
+    }
+
+    const beforeCount = sample.capturedCount
+    for (const rawJob of listResult.jobs) {
+      if (sample.capturedCount >= limitResult.limit) break
+      const rank = sample.capturedCount + 1
+      const normalizedJob = normalizeMarketJob(rawJob, { sampleKey: sample.sampleKey, rank })
+      const observationKey = `${sample.sampleKey}|${normalizedJob.jobIdentity.key}`
+      if (sampleObservationKeys.has(observationKey)) continue
+      sampleObservationKeys.add(observationKey)
+      sample.capturedCount += 1
+      upsertMarketJob(artifact, jobByIdentityKey, normalizedJob)
+    }
+
+    sample.dedupedJobCount = countJobsObservedInSample(artifact.jobs, sample.sampleKey)
+    artifact.statusSummary = summarizeMarketArtifact(artifact)
+    await writeArtifact(rawArtifactPath, artifact)
+
+    if (sample.capturedCount >= limitResult.limit) {
+      sample.status = 'ok'
+      sample.reasonCode = 'LIMIT_REACHED'
+      sample.endedAt = captureTime
+      shouldContinue = false
+      break
+    }
+
+    if (sample.capturedCount === beforeCount) sample.noNewItemCount += 1
+    else sample.noNewItemCount = 0
+
+    if (sample.noNewItemCount >= noNewItemStopThreshold) {
+      sample.status = 'ok'
+      sample.reasonCode = 'NO_NEW_ITEMS'
+      sample.endedAt = captureTime
+      shouldContinue = false
+      break
+    }
+
+    await scrollMarketJobsList(page, { settleMs: scrollSettleMs })
+    sample.scrollCount += 1
+  }
+
+  artifact.ok = true
+  artifact.reasonCode = null
+  artifact.statusSummary = summarizeMarketArtifact(artifact)
+  await writeArtifact(rawArtifactPath, artifact)
+
+  return buildCommandSummary({
+    artifact,
+    rawArtifactPath,
+    analysisArtifactPath: null,
+  })
+}
+
+export async function extractMarketJobsListFromPage (page) {
+  return await page.evaluate(readMarketJobsListStateInPage)
+}
+
+// Runs inside the BOSS page via page.evaluate. Keep it self-contained.
+export function readMarketJobsListStateInPage () {
+  const bodyText = document.body?.innerText ?? ''
+  const url = location.href
+  if (/登录\/注册|请登录|扫码登录|验证码登录|登录后继续/.test(bodyText)) {
+    return { ok: false, reasonCode: 'BOSS_LOGIN_REQUIRED', url, visibleText: bodyText.slice(0, 500), jobs: [] }
+  }
+  if (/安全验证|验证后继续|拖动滑块|verify|security-check/i.test(`${url}\n${bodyText}`)) {
+    return { ok: false, reasonCode: 'BOSS_SAFETY_VERIFICATION_REQUIRED', url, visibleText: bodyText.slice(0, 500), jobs: [] }
+  }
+  if (/环境异常|abnormal/i.test(`${url}\n${bodyText}`)) {
+    return { ok: false, reasonCode: 'BOSS_ABNORMAL_ENVIRONMENT', url, visibleText: bodyText.slice(0, 500), jobs: [] }
+  }
+
+  const selectors = [
+    'ul.rec-job-list li.job-card-box',
+    'li.job-card-box',
+    '.job-card-wrapper',
+    '.job-list-box li',
+  ]
+  const cards = selectors.flatMap(selector => [...document.querySelectorAll(selector)])
+  const uniqueCards = [...new Set(cards)].filter(el => String(el?.innerText ?? '').trim())
+  if (!uniqueCards.length) {
+    return { ok: false, reasonCode: 'BOSS_SEARCH_LIST_UNAVAILABLE', url, visibleText: bodyText.slice(0, 500), jobs: [] }
+  }
+
+  return {
+    ok: true,
+    url,
+    jobs: uniqueCards.map((el, index) => extractCard(el, index + 1)),
+  }
+
+  function extractCard (el, rank) {
+    const data = pickJobData(el.__vue__)
+    const text = el.innerText?.trim?.() ?? ''
+    const jobId = firstString(
+      data?.encryptId,
+      data?.encryptJobId,
+      data?.jobId,
+      data?.jobInfo?.encryptId,
+      data?.jobInfo?.encryptJobId,
+      data?.jobInfo?.jobId,
+      el.getAttribute?.('data-jobid'),
+      el.querySelector?.('a[href*="/job_detail/"]')?.getAttribute?.('href')?.match?.(/job_detail\/([^/.?]+)\.html/)?.[1]
+    )
+    const title = firstString(
+      data?.jobName,
+      data?.title,
+      data?.positionName,
+      data?.jobInfo?.jobName,
+      data?.jobInfo?.title,
+      queryText(el, '.job-name,.job-title,[class*="job-name"],[class*="title"]')
+    )
+    const company = firstString(
+      data?.brandName,
+      data?.companyName,
+      data?.company,
+      data?.jobInfo?.brandName,
+      data?.companyInfo?.brandName,
+      queryText(el, '.company-name,.boss-name,[class*="company"]')
+    )
+    const salaryText = firstString(
+      data?.salaryDesc,
+      data?.salary,
+      data?.salaryText,
+      data?.jobInfo?.salaryDesc,
+      queryText(el, '.salary,.job-salary,[class*="salary"]')
+    )
+    const city = firstString(
+      data?.cityName,
+      data?.city,
+      data?.jobInfo?.cityName,
+      data?.locationName,
+      queryText(el, '.job-area,.job-location,[class*="area"],[class*="location"]')
+    )
+    const experience = firstString(data?.jobExperience, data?.experience, data?.experienceName)
+    const degree = firstString(data?.degreeName, data?.degree, data?.jobDegree)
+    const positionCategory = firstString(data?.positionCategory, data?.positionCategoryName, data?.jobType)
+    const recruiter = firstObject(data?.bossInfo, data?.recruiter, data?.boss)
+    const companySummary = firstObject(data?.companyInfo, data?.brandInfo)
+    const tags = uniqueStrings([
+      ...toStringArray(data?.skills),
+      ...toStringArray(data?.tags),
+      ...toStringArray(data?.jobLabels),
+      ...[...el.querySelectorAll?.('.tag-list span,.job-card-footer span,[class*="tag"]') ?? []].map(item => item.textContent),
+    ])
+    const contact = classifyContactState(text)
+    return {
+      sourceRank: rank,
+      jobId,
+      title,
+      company,
+      city,
+      salaryText,
+      experience,
+      degree,
+      positionCategory,
+      tags,
+      contactState: contact.state,
+      contactEvidenceText: contact.evidenceText,
+      recruiter: {
+        name: firstString(data?.bossName, recruiter?.name, recruiter?.bossName, queryText(el, '.boss-name,[class*="boss"]')),
+        title: firstString(data?.bossTitle, recruiter?.title, recruiter?.position),
+        activeText: firstString(data?.activeTimeDesc, recruiter?.activeTimeDesc, queryText(el, '.boss-active,[class*="active"]')),
+      },
+      companySummary: {
+        industry: firstString(data?.industry, companySummary?.industry, companySummary?.industryName),
+        financingStage: firstString(data?.stageName, data?.financingStage, companySummary?.stageName, companySummary?.financingStage),
+        size: firstString(data?.scaleName, data?.companySize, companySummary?.scaleName, companySummary?.companySize),
+        tags: uniqueStrings([
+          ...toStringArray(companySummary?.tags),
+          ...toStringArray(data?.brandLabels),
+        ]),
+      },
+      listText: text,
+    }
+  }
+
+  function pickJobData (vue) {
+    const candidates = [
+      vue?.data,
+      vue?.job,
+      vue?.jobInfo,
+      vue?.item,
+      vue?.position,
+      vue?.$props?.data,
+      vue?.$props?.job,
+      vue?.$props?.item,
+      vue?._props?.data,
+      vue?._props?.job,
+      vue?._props?.item,
+    ]
+    return candidates.find(item => item && typeof item === 'object') ?? {}
+  }
+
+  function queryText (root, selector) {
+    return root.querySelector?.(selector)?.textContent?.trim?.() ?? ''
+  }
+
+  function classifyContactState (text) {
+    if (/已投递|投递成功/.test(text)) return { state: 'applied_or_chatting', evidenceText: '已投递' }
+    if (/继续沟通|已沟通|沟通中/.test(text)) return { state: 'contacted', evidenceText: text.match(/继续沟通|已沟通|沟通中/)?.[0] ?? '' }
+    if (/立即沟通/.test(text)) return { state: 'uncontacted', evidenceText: '立即沟通' }
+    return { state: 'unknown', evidenceText: '' }
+  }
+
+  function firstString (...values) {
+    for (const value of values) {
+      if (typeof value === 'string' && value.trim()) return value.trim()
+      if (typeof value === 'number') return String(value)
+    }
+    return ''
+  }
+
+  function firstObject (...values) {
+    return values.find(value => value && typeof value === 'object') ?? {}
+  }
+
+  function toStringArray (value) {
+    if (!Array.isArray(value)) return []
+    return value.map(item => typeof item === 'string' ? item : firstString(item?.name, item?.label, item?.text)).filter(Boolean)
+  }
+
+  function uniqueStrings (items) {
+    const seen = new Set()
+    const unique = []
+    for (const item of items) {
+      const key = String(item ?? '').trim()
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+      unique.push(key)
+    }
+    return unique
   }
 }
 
@@ -114,6 +476,211 @@ function normalizeLimit (value) {
   return { ok: true, limit: parsed }
 }
 
+async function openMarketJobsBrowser ({ headless = false, browserUrl = '', cdpPort = '' } = {}) {
+  const endpoint = browserUrl || (cdpPort ? `http://127.0.0.1:${cdpPort}` : '')
+  if (endpoint) {
+    const connectOptions = /^wss?:\/\//i.test(endpoint)
+      ? { browserWSEndpoint: endpoint }
+      : { browserURL: endpoint }
+    const browser = await puppeteer.connect(connectOptions)
+    const pages = await browser.pages()
+    const page = pages.find(item => item.url?.().includes('zhipin.com')) ?? pages[0] ?? await browser.newPage()
+    return { browser, page, shouldClose: false }
+  }
+  return { ...(await openBrowser({ headless })), shouldClose: true }
+}
+
+async function openMarketJobsSearchPage (page, { keyword, cityCode, settleMs = 5000 }) {
+  await page.goto(buildSearchPageUrl({ keyword, cityCode }), { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {})
+  await page.waitForFunction?.(() => document.readyState === 'complete', { timeout: 60000 }).catch(() => {})
+  if (settleMs > 0) await sleep(settleMs)
+}
+
+function buildSearchPageUrl ({ keyword = '', cityCode = '' } = {}) {
+  const url = new URL(searchPageUrl)
+  if (String(keyword).trim()) url.searchParams.set('query', String(keyword).trim())
+  if (String(cityCode).trim()) url.searchParams.set('city', String(cityCode).trim())
+  return url.toString()
+}
+
+async function scrollMarketJobsList (page, { settleMs = 1500 } = {}) {
+  await page.evaluate(scrollMarketJobsListInPage).catch(() => {})
+  if (settleMs > 0) await sleep(settleMs)
+}
+
+export function scrollMarketJobsListInPage () {
+  const selectors = [
+    'ul.rec-job-list li.job-card-box',
+    'li.job-card-box',
+    '.job-card-wrapper',
+    '.job-list-box li',
+  ]
+  const cards = selectors.flatMap(selector => [...document.querySelectorAll(selector)])
+  const lastCard = cards.at(-1)
+  if (lastCard?.scrollIntoView) {
+    lastCard.scrollIntoView({ behavior: 'smooth', block: 'end' })
+    return { scrolled: true, method: 'last-card' }
+  }
+  window.scrollBy?.(0, Math.floor(window.innerHeight * 0.8))
+  return { scrolled: true, method: 'window' }
+}
+
+function createBaseArtifact ({ captureTime, keywords, cities, requestedLimit, includeJd }) {
+  return {
+    schemaVersion: artifactSchemaVersion,
+    ok: false,
+    command: commandName,
+    captureMetadata: {
+      capturedAt: captureTime,
+      arguments: {
+        keywords,
+        cities,
+        requestedLimitPerSample: requestedLimit,
+        includeJd,
+      },
+      requestedLimitPerSample: requestedLimit,
+      includeJd,
+      readOnly: true,
+      authorization: {
+        issuesApplicationAuthorization: false,
+        consumesApplicationAuthorizationToken: false,
+      },
+    },
+    sourceStrategy: {
+      list: 'boss_geek_search_results',
+      jd: includeJd ? 'boss_job_detail_dom' : 'not_requested',
+      browserActions: 'read_only_list_scroll',
+    },
+    samples: [],
+    jobs: [],
+    statusSummary: {
+      sampleCount: 0,
+      jobCount: 0,
+      reasonCodes: {},
+      contactStates: {},
+      identityConfidence: {},
+    },
+  }
+}
+
+function normalizeMarketJob (rawJob, { sampleKey, rank }) {
+  const jobId = firstString(rawJob?.jobId, rawJob?.encryptJobId, rawJob?.encryptId)
+  const title = firstString(rawJob?.title, rawJob?.jobName, rawJob?.positionName)
+  const company = firstString(rawJob?.company, rawJob?.companyName, rawJob?.brandName)
+  const city = firstString(rawJob?.city, rawJob?.cityName)
+  const salaryText = firstString(rawJob?.salaryText, rawJob?.salary, rawJob?.salaryDesc)
+  const fingerprint = buildMissingJobFingerprint({
+    title,
+    company,
+    salaryText,
+    city,
+    sampleKey,
+    rank,
+  })
+  const jobIdentity = jobId
+    ? { status: 'stable', jobId, key: `job:${jobId}`, confidence: 'high' }
+    : { status: 'missing', jobId: '', fingerprint, key: `missing:${fingerprint}`, confidence: 'low' }
+  const contactState = normalizeContactState(rawJob?.contactState, rawJob?.listText)
+  return {
+    jobIdentity,
+    jobId,
+    title,
+    company,
+    city,
+    salaryText,
+    experience: firstString(rawJob?.experience),
+    degree: firstString(rawJob?.degree),
+    positionCategory: firstString(rawJob?.positionCategory),
+    tags: uniqueStrings(rawJob?.tags ?? []),
+    contactState,
+    contactEvidenceText: firstString(rawJob?.contactEvidenceText),
+    recruiter: {
+      name: firstString(rawJob?.recruiter?.name),
+      title: firstString(rawJob?.recruiter?.title),
+      activeText: firstString(rawJob?.recruiter?.activeText),
+    },
+    companySummary: {
+      industry: firstString(rawJob?.companySummary?.industry),
+      financingStage: firstString(rawJob?.companySummary?.financingStage),
+      size: firstString(rawJob?.companySummary?.size),
+      tags: uniqueStrings(rawJob?.companySummary?.tags ?? []),
+    },
+    observations: [
+      {
+        sampleKey,
+        rank,
+        sourceRank: Number.isFinite(Number(rawJob?.sourceRank)) ? Number(rawJob.sourceRank) : rank,
+        contactState,
+        contactEvidenceText: firstString(rawJob?.contactEvidenceText),
+        listText: firstString(rawJob?.listText),
+        source: {
+          type: 'boss_geek_search_results',
+        },
+      },
+    ],
+  }
+}
+
+function upsertMarketJob (artifact, jobByIdentityKey, normalizedJob) {
+  const existingIndex = jobByIdentityKey.has(normalizedJob.jobIdentity.key)
+    ? jobByIdentityKey.get(normalizedJob.jobIdentity.key)
+    : artifact.jobs.findIndex(job => job.jobIdentity?.key === normalizedJob.jobIdentity.key)
+  if (existingIndex >= 0) {
+    artifact.jobs[existingIndex].observations.push(...normalizedJob.observations)
+    return
+  }
+  jobByIdentityKey.set(normalizedJob.jobIdentity.key, artifact.jobs.length)
+  artifact.jobs.push(normalizedJob)
+}
+
+function countJobsObservedInSample (jobs, sampleKey) {
+  return jobs.filter(job => job.observations?.some(observation => observation.sampleKey === sampleKey)).length
+}
+
+function summarizeMarketArtifact (artifact) {
+  const summary = {
+    sampleCount: artifact.samples.length,
+    jobCount: artifact.jobs.length,
+    ok: 0,
+    failed: 0,
+    blocked: 0,
+    pending: 0,
+    reasonCodes: {},
+    contactStates: {},
+    identityConfidence: {},
+  }
+  for (const sample of artifact.samples) {
+    const status = sample.status || 'pending'
+    summary[status] = (summary[status] ?? 0) + 1
+    if (sample.reasonCode) summary.reasonCodes[sample.reasonCode] = (summary.reasonCodes[sample.reasonCode] ?? 0) + 1
+  }
+  for (const job of artifact.jobs) {
+    const contactState = job.contactState || 'unknown'
+    summary.contactStates[contactState] = (summary.contactStates[contactState] ?? 0) + 1
+    const confidence = job.jobIdentity?.confidence || 'unknown'
+    summary.identityConfidence[confidence] = (summary.identityConfidence[confidence] ?? 0) + 1
+  }
+  return summary
+}
+
+function buildCommandSummary ({ artifact, rawArtifactPath, analysisArtifactPath }) {
+  return {
+    ok: Boolean(artifact.ok),
+    command: commandName,
+    sampleCount: artifact.samples.length,
+    jobCount: artifact.jobs.length,
+    statusSummary: artifact.statusSummary,
+    rawArtifactPath,
+    analysisArtifactPath,
+    reasonCode: artifact.reasonCode,
+  }
+}
+
+async function writeArtifact (outputPath, artifact) {
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true })
+  fs.writeFileSync(outputPath, `${JSON.stringify(artifact, null, 2)}\n`, 'utf8')
+}
+
 function resolveMarketJobsOutputPath (outputPath, captureTime) {
   if (outputPath) return path.resolve(outputPath)
   return path.join(storageFilePath, 'market-jobs', `market-jobs-${fileTimestamp(captureTime)}.json`)
@@ -129,6 +696,21 @@ function normalizeList (value) {
   return items
     .map(item => String(item ?? '').trim())
     .filter(Boolean)
+}
+
+function normalizeResolvedCities (value) {
+  return (Array.isArray(value) ? value : [])
+    .map(item => {
+      if (item && typeof item === 'object') {
+        return {
+          cityInput: firstString(item.cityInput, item.city),
+          cityCode: firstString(item.cityCode, item.code),
+        }
+      }
+      const cityInput = String(item ?? '').trim()
+      return { cityInput, cityCode: resolveCityCode(cityInput) }
+    })
+    .filter(item => item.cityInput && item.cityCode)
 }
 
 function slugKeyword (value) {
@@ -147,6 +729,50 @@ function failure (reasonCode, error) {
     reasonCode,
     error,
   }
+}
+
+function isPlatformRiskReason (reasonCode) {
+  return [
+    'BOSS_LOGIN_REQUIRED',
+    'BOSS_SAFETY_VERIFICATION_REQUIRED',
+    'BOSS_ABNORMAL_ENVIRONMENT',
+  ].includes(reasonCode)
+}
+
+function buildMissingJobFingerprint ({ title, company, salaryText, city, sampleKey, rank }) {
+  return [title, company, salaryText, city, sampleKey, rank]
+    .map(item => String(item ?? '').trim())
+    .join('|')
+}
+
+function normalizeContactState (value, listText = '') {
+  const raw = String(value ?? '').trim()
+  if (['uncontacted', 'contacted', 'applied_or_chatting', 'unknown'].includes(raw)) return raw
+  const text = String(listText ?? '')
+  if (/已投递|投递成功/.test(text)) return 'applied_or_chatting'
+  if (/继续沟通|已沟通|沟通中/.test(text)) return 'contacted'
+  if (/立即沟通/.test(text)) return 'uncontacted'
+  return 'unknown'
+}
+
+function uniqueStrings (items) {
+  const seen = new Set()
+  const unique = []
+  for (const item of Array.isArray(items) ? items : []) {
+    const key = String(item ?? '').trim()
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    unique.push(key)
+  }
+  return unique
+}
+
+function firstString (...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim()
+    if (typeof value === 'number') return String(value)
+  }
+  return ''
 }
 
 function toIso (value) {
