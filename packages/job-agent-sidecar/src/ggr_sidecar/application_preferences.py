@@ -81,7 +81,10 @@ PreferenceTrack = Literal[
 
 
 class PreferenceSourceMetadata(FlexibleCliModel):
-    kind: Literal["recent_applications_with_jd"] = "recent_applications_with_jd"
+    kind: Literal[
+        "recent_applications_with_jd",
+        "cold_start_preference_inputs",
+    ] = "recent_applications_with_jd"
     artifactSchemaVersion: str | None = None
     capturedAt: str | None = None
     readOnly: bool | None = None
@@ -97,6 +100,7 @@ class PreferenceInputCoverage(FlexibleCliModel):
     clarificationAnswers: bool = False
     recordsTotal: int = 0
     recordsWithJd: int = 0
+    targetJdSampleCount: int = 0
 
 
 class PreferenceSampleCounts(FlexibleCliModel):
@@ -147,7 +151,15 @@ class PreferenceNormalizedCounts(FlexibleCliModel):
 
 class PreferenceEvidenceIndexEntry(FlexibleCliModel):
     id: str
-    type: Literal["record_summary", "jd_snippet", "clarification_answer"]
+    type: Literal[
+        "record_summary",
+        "jd_snippet",
+        "candidate_statement",
+        "capability_profile",
+        "target_jd_sample",
+        "target_jd_snippet",
+        "clarification_answer",
+    ]
     sourceRecordId: str
     recordRank: int | None = None
     field: str
@@ -210,6 +222,7 @@ class PreferenceEvidencePackage(FlexibleCliModel):
     representativeExamples: list[RepresentativeExample] = Field(default_factory=list)
     conflictSignals: list[PreferenceSignal] = Field(default_factory=list)
     missingDataSignals: list[PreferenceSignal] = Field(default_factory=list)
+    requestedEvidence: list[PreferenceSignal] = Field(default_factory=list)
     evidenceIndex: list[PreferenceEvidenceIndexEntry] = Field(default_factory=list)
     preferenceEvidenceUse: str = (
         "decision_evidence_only_not_application_authorization"
@@ -217,7 +230,7 @@ class PreferenceEvidencePackage(FlexibleCliModel):
 
 
 PreferenceConfidence = Literal["low", "medium", "high"]
-EvidenceStrengthValue = Literal["missing", "weak", "moderate", "strong"]
+EvidenceStrengthValue = Literal["none", "missing", "weak", "moderate", "strong"]
 ApplicationPreferenceProfileStatus = Literal[
     "ok",
     "evidence_package_error",
@@ -241,6 +254,7 @@ class StrictPreferenceModel(BaseModel):
 
 
 class ApplicationPreferenceEvidenceStrength(StrictPreferenceModel):
+    recentApplicationEvidence: EvidenceStrengthValue | None = None
     recentApplicationsWithJd: EvidenceStrengthValue
     candidateStatement: EvidenceStrengthValue
     capabilityProfile: EvidenceStrengthValue
@@ -632,6 +646,9 @@ def _build_application_preference_profile_messages(
                     "Use only the redacted Preference Evidence Package.",
                     "Every preference item evidenceRefs value must come from allowedEvidenceRefs.",
                     "Do not invent evidence references. Put unsupported claims in uncertainties.",
+                    "If Recent Application Evidence is absent, "
+                    "profileConfidence must be low or medium.",
+                    "For cold start, report evidenceStrength.recentApplicationEvidence as none.",
                     "The profile is Decision Evidence only and grants no Application Authorization.",
                     "Return only one JSON object and no markdown.",
                 ]
@@ -784,6 +801,13 @@ def _validate_application_preference_profile(
             ref_errors,
         )
 
+    cold_start_errors = _cold_start_profile_validation_errors(profile, package)
+    if cold_start_errors:
+        raise ApplicationPreferenceProfileValidationError(
+            "schema_error",
+            cold_start_errors,
+        )
+
 
 def _unknown_evidence_ref_errors(
     profile: ApplicationPreferenceProfile,
@@ -814,6 +838,47 @@ def _unknown_evidence_ref_errors(
     return errors
 
 
+def _cold_start_profile_validation_errors(
+    profile: ApplicationPreferenceProfile,
+    package: PreferenceEvidencePackage,
+) -> list[ValidationFailure]:
+    if package.inputCoverage.recentApplicationsWithJd:
+        return []
+
+    errors: list[ValidationFailure] = []
+    if profile.profileConfidence == "high":
+        errors.append(
+            ValidationFailure(
+                loc=["profileConfidence"],
+                msg=(
+                    "cold-start profiles without historical evidence must be "
+                    "low or medium confidence"
+                ),
+                type="value_error.cold_start_confidence",
+            )
+        )
+
+    recent_strengths = [
+        profile.evidenceStrength.recentApplicationsWithJd,
+        profile.evidenceStrength.recentApplicationEvidence,
+    ]
+    for index, strength in enumerate(recent_strengths):
+        if strength is not None and strength not in {"none", "missing"}:
+            field = (
+                "recentApplicationsWithJd"
+                if index == 0
+                else "recentApplicationEvidence"
+            )
+            errors.append(
+                ValidationFailure(
+                    loc=["evidenceStrength", field],
+                    msg="cold-start profiles must report missing historical evidence",
+                    type="value_error.cold_start_evidence_strength",
+                )
+            )
+    return errors
+
+
 def _validation_failures_from_pydantic(err: ValidationError) -> list[ValidationFailure]:
     failures: list[ValidationFailure] = []
     for item in err.errors():
@@ -828,22 +893,38 @@ def _validation_failures_from_pydantic(err: ValidationError) -> list[ValidationF
 
 
 def build_preference_evidence_package_from_file(
-    recent_applications_path: Path | str,
+    recent_applications_path: Path | str | None = None,
     *,
+    candidate_statement_path: Path | str | None = None,
+    capability_profile_path: Path | str | None = None,
+    target_jd_samples_path: Path | str | None = None,
     clarification_answers_path: Path | str | None = None,
     now: str | datetime | None = None,
 ) -> PreferenceEvidencePackage:
-    path = Path(recent_applications_path)
-    raw = path.read_bytes()
-    artifact = json.loads(raw.decode("utf-8"))
-    clarification_artifact = None
-    if clarification_answers_path is not None:
-        clarification_path = Path(clarification_answers_path)
-        clarification_raw = clarification_path.read_bytes()
-        clarification_artifact = json.loads(clarification_raw.decode("utf-8"))
+    recent_applications_artifact, recent_applications_raw = _read_optional_json_file(
+        recent_applications_path
+    )
+    candidate_statement_artifact, candidate_statement_raw = _read_optional_json_file(
+        candidate_statement_path
+    )
+    capability_profile_artifact, capability_profile_raw = _read_optional_json_file(
+        capability_profile_path
+    )
+    target_jd_samples_artifact, target_jd_samples_raw = _read_optional_json_file(
+        target_jd_samples_path
+    )
+    clarification_artifact, _clarification_raw = _read_optional_json_file(
+        clarification_answers_path
+    )
     return build_preference_evidence_package(
-        recent_applications_artifact=artifact,
-        source_bytes=raw,
+        recent_applications_artifact=recent_applications_artifact,
+        source_bytes=recent_applications_raw,
+        candidate_statement_artifact=candidate_statement_artifact,
+        candidate_statement_bytes=candidate_statement_raw,
+        capability_profile_artifact=capability_profile_artifact,
+        capability_profile_bytes=capability_profile_raw,
+        target_jd_samples_artifact=target_jd_samples_artifact,
+        target_jd_samples_bytes=target_jd_samples_raw,
         clarification_answers_artifact=clarification_artifact,
         now=now,
     )
@@ -851,16 +932,38 @@ def build_preference_evidence_package_from_file(
 
 def build_preference_evidence_package(
     *,
-    recent_applications_artifact: dict[str, Any],
+    recent_applications_artifact: dict[str, Any] | None = None,
     source_bytes: bytes | None = None,
+    candidate_statement_artifact: dict[str, Any] | str | None = None,
+    candidate_statement_bytes: bytes | None = None,
+    capability_profile_artifact: dict[str, Any] | str | None = None,
+    capability_profile_bytes: bytes | None = None,
+    target_jd_samples_artifact: dict[str, Any] | list[Any] | None = None,
+    target_jd_samples_bytes: bytes | None = None,
     clarification_answers_artifact: (
         PreferenceClarificationAnswersArtifact | dict[str, Any] | None
     ) = None,
     now: str | datetime | None = None,
 ) -> PreferenceEvidencePackage:
-    recent_applications_hash = _source_sha256(
-        recent_applications_artifact,
-        source_bytes,
+    recent_applications_hash = (
+        _source_sha256(recent_applications_artifact, source_bytes)
+        if recent_applications_artifact is not None
+        else None
+    )
+    candidate_statement_hash = (
+        _source_sha256(candidate_statement_artifact, candidate_statement_bytes)
+        if candidate_statement_artifact is not None
+        else None
+    )
+    capability_profile_hash = (
+        _source_sha256(capability_profile_artifact, capability_profile_bytes)
+        if capability_profile_artifact is not None
+        else None
+    )
+    target_jd_samples_hash = (
+        _source_sha256(target_jd_samples_artifact, target_jd_samples_bytes)
+        if target_jd_samples_artifact is not None
+        else None
     )
     clarification_answers = _normalize_clarification_answers(
         clarification_answers_artifact
@@ -873,28 +976,69 @@ def build_preference_evidence_package(
         if clarification_answers
         else None
     )
-    source_fingerprints = {"recentApplications": recent_applications_hash}
+    source_fingerprints: dict[str, str] = {}
+    if recent_applications_hash is not None:
+        source_fingerprints["recentApplications"] = recent_applications_hash
+    if candidate_statement_hash is not None:
+        source_fingerprints["candidateStatement"] = candidate_statement_hash
+    if capability_profile_hash is not None:
+        source_fingerprints["capabilityProfile"] = capability_profile_hash
+    if target_jd_samples_hash is not None:
+        source_fingerprints["targetJdSamples"] = target_jd_samples_hash
     if clarification_answers_hash is not None:
         source_fingerprints["clarificationAnswers"] = clarification_answers_hash
     source_hash = _combined_source_hash(source_fingerprints)
-    records = [
+
+    recent_applications = recent_applications_artifact or {}
+    recent_records = [
         _normalize_preference_record(record, index)
         for index, record in enumerate(
             sorted(
-                recent_applications_artifact.get("records") or [],
+                recent_applications.get("records") or [],
                 key=lambda item: _int_or_none(item.get("rank")) or 999_999,
             ),
             start=1,
         )
     ]
-    evidence_index = _build_evidence_index(records, clarification_answers)
+    target_records = _normalize_target_jd_sample_records(
+        target_jd_samples_artifact,
+        start_index=len(recent_records) + 1,
+    )
+    records = [*recent_records, *target_records]
+    has_recent_application_evidence = any(
+        record["has_jd"] for record in recent_records
+    )
+    _validate_cold_start_inputs(
+        has_recent_application_evidence=has_recent_application_evidence,
+        candidate_statement_artifact=candidate_statement_artifact,
+        capability_profile_artifact=capability_profile_artifact,
+    )
+
+    candidate_statement_text = _summarize_preference_input(
+        candidate_statement_artifact,
+        max_length=900,
+    )
+    capability_profile_text = _summarize_preference_input(
+        capability_profile_artifact,
+        max_length=1200,
+    )
+    evidence_index = _build_evidence_index(
+        records,
+        clarification_answers,
+        candidate_statement_text=candidate_statement_text,
+        capability_profile_text=capability_profile_text,
+    )
     cluster_state = _build_preference_clusters(records)
     representatives = _build_representative_examples(cluster_state)
     clusters = _materialize_cluster_groups(cluster_state, representatives)
     source = _build_preference_source(
-        recent_applications_artifact,
+        recent_applications,
         recent_applications_hash,
+        candidate_statement_hash=candidate_statement_hash,
+        capability_profile_hash=capability_profile_hash,
+        target_jd_samples_hash=target_jd_samples_hash,
         clarification_answers_hash=clarification_answers_hash,
+        has_recent_application_evidence=has_recent_application_evidence,
     )
 
     return PreferenceEvidencePackage(
@@ -902,21 +1046,172 @@ def build_preference_evidence_package(
         generatedAt=_iso_now(now),
         source=source,
         inputCoverage=PreferenceInputCoverage(
-            recentApplicationsWithJd=any(record["has_jd"] for record in records),
+            recentApplicationsWithJd=has_recent_application_evidence,
+            candidateStatement=bool(candidate_statement_text),
+            capabilityProfile=bool(capability_profile_text),
+            targetJdSamples=bool(target_records),
             clarificationAnswers=bool(clarification_answers),
             recordsTotal=len(records),
             recordsWithJd=sum(1 for record in records if record["has_jd"]),
+            targetJdSampleCount=len(target_records),
         ),
-        sampleCounts=_build_sample_counts(recent_applications_artifact, records),
+        sampleCounts=_build_sample_counts(recent_applications, recent_records),
         sourceFingerprint=SourceFingerprint(sha256=source_hash),
         sourceFingerprints=source_fingerprints,
         normalizedCounts=_build_normalized_counts(records),
         clusters=clusters,
         representativeExamples=representatives,
         conflictSignals=_build_conflict_signals(records, evidence_index),
-        missingDataSignals=_build_missing_data_signals(records),
+        missingDataSignals=_build_missing_data_signals(
+            records,
+            has_recent_application_evidence=has_recent_application_evidence,
+            has_candidate_statement=bool(candidate_statement_text),
+            has_capability_profile=bool(capability_profile_text),
+            has_target_jd_samples=bool(target_records),
+        ),
+        requestedEvidence=_build_requested_evidence_signals(
+            has_recent_application_evidence=has_recent_application_evidence,
+            has_target_jd_samples=bool(target_records),
+        ),
         evidenceIndex=evidence_index,
     )
+
+
+def _read_optional_json_file(
+    path: Path | str | None,
+) -> tuple[Any | None, bytes | None]:
+    if path is None:
+        return None, None
+    raw = Path(path).read_bytes()
+    return json.loads(raw.decode("utf-8")), raw
+
+
+def _validate_cold_start_inputs(
+    *,
+    has_recent_application_evidence: bool,
+    candidate_statement_artifact: Any,
+    capability_profile_artifact: Any,
+) -> None:
+    if has_recent_application_evidence:
+        return
+    missing: list[str] = []
+    if not _summarize_preference_input(candidate_statement_artifact, max_length=80):
+        missing.append("candidate statement")
+    if not _summarize_preference_input(capability_profile_artifact, max_length=80):
+        missing.append("capability profile")
+    if missing:
+        raise ValueError(
+            "cold-start preference evidence requires "
+            + " and ".join(missing)
+        )
+
+
+def _normalize_target_jd_sample_records(
+    value: dict[str, Any] | list[Any] | None,
+    *,
+    start_index: int,
+) -> list[dict[str, Any]]:
+    samples = _target_jd_sample_items(value)
+    return [
+        _normalize_preference_record(
+            _coerce_target_jd_sample_record(sample, index),
+            start_index + index - 1,
+            source_kind="target_jd_sample",
+            evidence_prefix="ev-target-jd-sample",
+            evidence_index=index,
+        )
+        for index, sample in enumerate(samples, start=1)
+    ]
+
+
+def _target_jd_sample_items(value: dict[str, Any] | list[Any] | None) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        for key in ["samples", "targetJdSamples", "target_jd_samples", "records"]:
+            items = value.get(key)
+            if isinstance(items, list):
+                return items
+        if "jd" in value or "jdText" in value or "text" in value:
+            return [value]
+    return []
+
+
+def _coerce_target_jd_sample_record(value: Any, index: int) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {"text": value}
+    jd = raw.get("jd") if isinstance(raw.get("jd"), dict) else {}
+    jd_text = jd.get("text") or raw.get("jdText") or raw.get("description") or raw.get("text")
+    sample_id = _string(raw.get("sampleId")) or _string(raw.get("id")) or f"target-{index:03d}"
+    return {
+        "rank": index,
+        "status": "target_sample",
+        "sampleId": sample_id,
+        "title": raw.get("title") or raw.get("jobTitle") or "Target JD sample",
+        "company": raw.get("company") or raw.get("companyName") or "unknown",
+        "city": raw.get("city") or raw.get("location") or "unknown",
+        "positionCategory": raw.get("positionCategory") or raw.get("category") or "",
+        "jd": {
+            "status": "ok" if _string(jd_text) else "missing",
+            "text": jd_text or "",
+        },
+    }
+
+
+def _summarize_preference_input(value: Any, *, max_length: int) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return _safe_preference_text(value, max_length)
+    strings = _preference_input_strings(value)
+    return _safe_preference_text(" | ".join(strings), max_length)
+
+
+def _preference_input_strings(value: Any) -> list[str]:
+    if value is None or isinstance(value, (bool, int, float)):
+        return []
+    if isinstance(value, str):
+        text = _normalize_text(value)
+        return [text] if text else []
+    if isinstance(value, list):
+        output: list[str] = []
+        for item in value[:12]:
+            output.extend(_preference_input_strings(item))
+            if len(output) >= 24:
+                break
+        return output
+    if not isinstance(value, dict):
+        return []
+
+    profile = value.get("profile") if isinstance(value.get("profile"), dict) else value
+    preferred_keys = [
+        "statement",
+        "candidateStatement",
+        "targetRoleDirection",
+        "summary",
+        "rationale",
+        "constraints",
+        "demonstratedAbilities",
+        "supportingEvidenceSummaries",
+        "transferableStrengths",
+        "gaps",
+        "framingBoundaries",
+    ]
+    output: list[str] = []
+    for key in preferred_keys:
+        if key in profile:
+            output.extend(_preference_input_strings(profile.get(key)))
+    if output:
+        return output[:24]
+
+    for key, item in list(profile.items())[:12]:
+        if key in {"resumeMarkdown", "rawResume", "fullResumeText"}:
+            continue
+        output.extend(_preference_input_strings(item))
+        if len(output) >= 24:
+            break
+    return output[:24]
 
 
 _PREFERENCE_SIGNAL_PATTERNS: tuple[tuple[str, str], ...] = (
@@ -963,7 +1258,16 @@ _PREFERENCE_SIGNAL_LABELS = {
 _SIGNAL_ORDER = [key for key, _pattern in _PREFERENCE_SIGNAL_PATTERNS]
 
 
-def _normalize_preference_record(record: dict[str, Any], index: int) -> dict[str, Any]:
+def _normalize_preference_record(
+    record: dict[str, Any],
+    index: int,
+    *,
+    source_kind: Literal["recent_application", "target_jd_sample"] = (
+        "recent_application"
+    ),
+    evidence_prefix: str = "ev-record",
+    evidence_index: int | None = None,
+) -> dict[str, Any]:
     title = _safe_preference_text(record.get("title"), 120)
     company = _safe_preference_text(record.get("company"), 120)
     city = _safe_preference_text(record.get("city"), 80)
@@ -977,7 +1281,7 @@ def _normalize_preference_record(record: dict[str, Any], index: int) -> dict[str
     jd_signals = _extract_preference_signal_ids(jd_haystack)
     signals = [key for key in _SIGNAL_ORDER if key in {*(title_signals), *(jd_signals)}]
     source_record_id = _preference_source_record_id(record, index)
-    evidence_id = f"ev-record-{index:03d}"
+    evidence_id = f"{evidence_prefix}-{(evidence_index or index):03d}"
     snippets = _select_preference_snippets(jd_text, signals)
     snippet_evidence_ids = [
         f"{evidence_id}-snippet-{snippet_index:02d}"
@@ -985,6 +1289,7 @@ def _normalize_preference_record(record: dict[str, Any], index: int) -> dict[str
     ]
     return {
         "id": f"record-{index:03d}",
+        "source_kind": source_kind,
         "rank": _int_or_none(record.get("rank")) or index,
         "source_record_id": source_record_id,
         "evidence_id": evidence_id,
@@ -1008,8 +1313,33 @@ def _normalize_preference_record(record: dict[str, Any], index: int) -> dict[str
 def _build_evidence_index(
     records: list[dict[str, Any]],
     clarification_answers: list[PreferenceClarificationAnswer] | None = None,
+    *,
+    candidate_statement_text: str = "",
+    capability_profile_text: str = "",
 ) -> list[PreferenceEvidenceIndexEntry]:
     entries: list[PreferenceEvidenceIndexEntry] = []
+    if candidate_statement_text:
+        entries.append(
+            PreferenceEvidenceIndexEntry(
+                id="ev-candidate-statement",
+                type="candidate_statement",
+                sourceRecordId="candidate-statement",
+                field="candidateStatement.summary",
+                redactedValue=candidate_statement_text,
+                signalIds=_extract_preference_signal_ids(candidate_statement_text),
+            )
+        )
+    if capability_profile_text:
+        entries.append(
+            PreferenceEvidenceIndexEntry(
+                id="ev-capability-profile",
+                type="capability_profile",
+                sourceRecordId="capability-profile",
+                field="capabilityProfile.summary",
+                redactedValue=capability_profile_text,
+                signalIds=_extract_preference_signal_ids(capability_profile_text),
+            )
+        )
     for record in records:
         summary_parts = [
             record["title"],
@@ -1017,13 +1347,18 @@ def _build_evidence_index(
             record["city"],
             record["position_category"],
         ]
+        is_target_sample = record["source_kind"] == "target_jd_sample"
         entries.append(
             PreferenceEvidenceIndexEntry(
                 id=record["evidence_id"],
-                type="record_summary",
+                type="target_jd_sample" if is_target_sample else "record_summary",
                 sourceRecordId=record["source_record_id"],
                 recordRank=record["rank"],
-                field="record_summary",
+                field=(
+                    "targetJdSample.summary"
+                    if is_target_sample
+                    else "record_summary"
+                ),
                 redactedValue=" | ".join(part for part in summary_parts if part),
                 signalIds=record["signals"],
             )
@@ -1032,10 +1367,14 @@ def _build_evidence_index(
             entries.append(
                 PreferenceEvidenceIndexEntry(
                     id=f"{record['evidence_id']}-snippet-{index:02d}",
-                    type="jd_snippet",
+                    type="target_jd_snippet" if is_target_sample else "jd_snippet",
                     sourceRecordId=record["source_record_id"],
                     recordRank=record["rank"],
-                    field="jd.snippet",
+                    field=(
+                        "targetJdSample.jd.snippet"
+                        if is_target_sample
+                        else "jd.snippet"
+                    ),
                     redactedValue=snippet,
                     signalIds=record["signals"],
                 )
@@ -1306,18 +1645,41 @@ def _is_boundary_signal_set(signals: set[str]) -> bool:
 
 def _build_preference_source(
     artifact: dict[str, Any],
-    source_hash: str,
+    source_hash: str | None,
     *,
+    candidate_statement_hash: str | None = None,
+    capability_profile_hash: str | None = None,
+    target_jd_samples_hash: str | None = None,
     clarification_answers_hash: str | None = None,
+    has_recent_application_evidence: bool = True,
 ) -> PreferenceSourceMetadata:
     metadata = artifact.get("captureMetadata") or {}
     authorization = metadata.get("authorization") or {}
-    source_artifact_ids = [f"recent-applications:{source_hash[:16]}"]
+    source_artifact_ids: list[str] = []
+    if source_hash is not None:
+        source_artifact_ids.append(f"recent-applications:{source_hash[:16]}")
+    if candidate_statement_hash is not None:
+        source_artifact_ids.append(
+            f"candidate-statement:{candidate_statement_hash[:16]}"
+        )
+    if capability_profile_hash is not None:
+        source_artifact_ids.append(
+            f"candidate-capability-profile:{capability_profile_hash[:16]}"
+        )
+    if target_jd_samples_hash is not None:
+        source_artifact_ids.append(
+            f"target-jd-samples:{target_jd_samples_hash[:16]}"
+        )
     if clarification_answers_hash is not None:
         source_artifact_ids.append(
             f"preference-clarification-answers:{clarification_answers_hash[:16]}"
         )
     return PreferenceSourceMetadata(
+        kind=(
+            "recent_applications_with_jd"
+            if has_recent_application_evidence
+            else "cold_start_preference_inputs"
+        ),
         artifactSchemaVersion=_string(artifact.get("schemaVersion")),
         capturedAt=_string(metadata.get("capturedAt")),
         readOnly=metadata.get("readOnly") if isinstance(metadata.get("readOnly"), bool) else None,
@@ -1432,13 +1794,46 @@ def _build_conflict_signals(
 
 def _build_missing_data_signals(
     records: list[dict[str, Any]],
+    *,
+    has_recent_application_evidence: bool,
+    has_candidate_statement: bool,
+    has_capability_profile: bool,
+    has_target_jd_samples: bool,
 ) -> list[PreferenceSignal]:
     signals: list[PreferenceSignal] = []
+    if not has_recent_application_evidence:
+        signals.append(
+            PreferenceSignal(
+                id="missing-recent-application-evidence",
+                label="Recent Application Evidence is missing for this cold-start package.",
+            )
+        )
+    if not has_candidate_statement:
+        signals.append(
+            PreferenceSignal(
+                id="missing-candidate-statement",
+                label="Candidate Statement is missing.",
+            )
+        )
+    if not has_capability_profile:
+        signals.append(
+            PreferenceSignal(
+                id="missing-capability-profile",
+                label="Candidate Capability Profile is missing.",
+            )
+        )
+    if not has_target_jd_samples:
+        signals.append(
+            PreferenceSignal(
+                id="missing-target-jd-samples",
+                label="Target JD Samples are missing as optional strengthening evidence.",
+            )
+        )
     if not records:
         signals.append(
             PreferenceSignal(
-                id="missing-recent-applications",
-                label="No recent application records were available.",
+                id="missing-preference-records",
+                label="No recent application records or target JD samples were available.",
             )
         )
         return signals
@@ -1458,6 +1853,32 @@ def _build_missing_data_signals(
             PreferenceSignal(
                 id="missing-backend-data-main-track-evidence",
                 label="No backend/data main-track evidence was found.",
+            )
+        )
+    return signals
+
+
+def _build_requested_evidence_signals(
+    *,
+    has_recent_application_evidence: bool,
+    has_target_jd_samples: bool,
+) -> list[PreferenceSignal]:
+    signals: list[PreferenceSignal] = []
+    if not has_recent_application_evidence:
+        signals.append(
+            PreferenceSignal(
+                id="request-recent-application-evidence",
+                label=(
+                    "Add Recent Application Evidence when available to raise "
+                    "profile confidence."
+                ),
+            )
+        )
+    if not has_target_jd_samples:
+        signals.append(
+            PreferenceSignal(
+                id="request-target-jd-samples",
+                label="Add Target JD Samples to strengthen cold-start preference evidence.",
             )
         )
     return signals
@@ -1540,6 +1961,7 @@ def _preference_source_record_id(record: dict[str, Any], index: int) -> str:
     value = (
         identity.get("jobId")
         or identity.get("encryptJobId")
+        or record.get("sampleId")
         or record.get("conversationId")
         or f"rank-{index}"
     )
@@ -1679,7 +2101,7 @@ def _safe_preference_text(value: Any, max_length: int) -> str:
     return _clip(_redact_sensitive_fragments(text), max_length) if text else ""
 
 
-def _source_sha256(artifact: dict[str, Any], source_bytes: bytes | None) -> str:
+def _source_sha256(artifact: Any, source_bytes: bytes | None) -> str:
     if source_bytes is None:
         source_bytes = json.dumps(
             artifact,

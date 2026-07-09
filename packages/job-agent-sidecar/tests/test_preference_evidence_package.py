@@ -243,6 +243,100 @@ def test_clarification_answers_are_persisted_and_indexed_as_evidence(
     assert written["evidenceIndex"][-1]["id"] == "ev-clarification-main-track-001"
 
 
+def test_build_cold_start_preference_evidence_package_without_recent_applications(
+    tmp_path: Path,
+) -> None:
+    candidate_statement_path = tmp_path / "candidate-statement.json"
+    capability_profile_path = tmp_path / "capability-profile.json"
+    target_jd_samples_path = tmp_path / "target-jd-samples.json"
+    output_path = tmp_path / "preference-evidence.json"
+    candidate_statement_path.write_text(
+        json.dumps(candidate_statement_artifact(), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    capability_profile_path.write_text(
+        json.dumps(capability_profile_artifact(), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    target_jd_samples_path.write_text(
+        json.dumps(target_jd_samples_artifact(), ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    package = build_preference_evidence_package(
+        candidate_statement_artifact=candidate_statement_artifact(),
+        capability_profile_artifact=capability_profile_artifact(),
+        target_jd_samples_artifact=target_jd_samples_artifact(),
+        now="2026-07-08T10:00:00.000Z",
+    )
+
+    assert package.source.kind == "cold_start_preference_inputs"
+    assert package.inputCoverage.recentApplicationsWithJd is False
+    assert package.inputCoverage.candidateStatement is True
+    assert package.inputCoverage.capabilityProfile is True
+    assert package.inputCoverage.targetJdSamples is True
+    assert package.inputCoverage.recordsTotal == 2
+    assert package.inputCoverage.recordsWithJd == 2
+    assert package.inputCoverage.targetJdSampleCount == 2
+    assert package.sampleCounts.totalRecords == 0
+    assert package.sourceFingerprints["candidateStatement"]
+    assert package.sourceFingerprints["capabilityProfile"]
+    assert package.sourceFingerprints["targetJdSamples"]
+    assert "recentApplications" not in package.sourceFingerprints
+
+    evidence_ids = {entry.id for entry in package.evidenceIndex}
+    assert "ev-candidate-statement" in evidence_ids
+    assert "ev-capability-profile" in evidence_ids
+    assert "ev-target-jd-sample-001" in evidence_ids
+    assert "ev-target-jd-sample-002" in evidence_ids
+    assert package.clusters.possibleMainTrack[0].id == "cluster-main-ai-backend"
+    assert any(
+        signal.id == "missing-recent-application-evidence"
+        for signal in package.missingDataSignals
+    )
+    assert any(
+        signal.id == "request-recent-application-evidence"
+        for signal in package.requestedEvidence
+    )
+
+    exit_code = cli_main(
+        [
+            "build-preference-evidence",
+            "--candidate-statement",
+            str(candidate_statement_path),
+            "--capability-profile",
+            str(capability_profile_path),
+            "--target-jd-samples",
+            str(target_jd_samples_path),
+            "--output",
+            str(output_path),
+            "--now",
+            "2026-07-08T10:00:00.000Z",
+        ]
+    )
+
+    assert exit_code == 0
+    written = json.loads(output_path.read_text(encoding="utf-8"))
+    assert written["inputCoverage"]["recentApplicationsWithJd"] is False
+    assert written["inputCoverage"]["candidateStatement"] is True
+    assert written["inputCoverage"]["capabilityProfile"] is True
+    assert written["inputCoverage"]["targetJdSamples"] is True
+    assert written["evidenceIndex"][0]["id"] == "ev-candidate-statement"
+
+
+def test_cold_start_requires_candidate_statement_and_capability_profile() -> None:
+    try:
+        build_preference_evidence_package(
+            target_jd_samples_artifact=target_jd_samples_artifact(),
+            now="2026-07-08T10:00:00.000Z",
+        )
+    except ValueError as err:
+        assert "candidate statement" in str(err)
+        assert "capability profile" in str(err)
+    else:
+        raise AssertionError("expected cold-start evidence build to require inputs")
+
+
 def recent_applications_artifact() -> dict[str, Any]:
     return {
         "schemaVersion": "recent-applications.v1",
@@ -324,6 +418,72 @@ def recent_applications_artifact() -> dict[str, Any]:
                     "RAW_SECURITY_ID_SHOULD_NOT_APPEAR"
                 ),
             ),
+        ],
+    }
+
+
+def candidate_statement_artifact() -> dict[str, Any]:
+    return {
+        "schemaVersion": "candidate-statement.v1",
+        "statement": (
+            "Main track: Python backend and LLM Agent internships or junior roles. "
+            "Side track: remote Japanese localization only if clearly part-time. "
+            "Avoid generic sales or customer service."
+        ),
+        "constraints": ["Shanghai or remote", "No generic operations roles"],
+    }
+
+
+def capability_profile_artifact() -> dict[str, Any]:
+    return {
+        "schemaVersion": "candidate-capability-profile.v1",
+        "profile": {
+            "demonstratedAbilities": [
+                {
+                    "ability": "Python backend automation",
+                    "evidenceSummary": (
+                        "Built FastAPI services and workflow automation projects."
+                    ),
+                }
+            ],
+            "supportingEvidenceSummaries": [
+                "Project evidence shows API development and data-processing automation."
+            ],
+            "targetRoleDirection": "Python backend and AI agent roles",
+            "transferableStrengths": ["Workflow automation", "API integration"],
+            "gaps": ["No durable evidence for Java enterprise ownership"],
+            "framingBoundaries": [
+                "Do not claim senior tenure, certifications, or guaranteed availability."
+            ],
+        },
+    }
+
+
+def target_jd_samples_artifact() -> dict[str, Any]:
+    return {
+        "schemaVersion": "target-jd-samples.v1",
+        "samples": [
+            {
+                "sampleId": "target-main-ai-backend",
+                "title": "Python LLM Agent 后端实习",
+                "company": "Target Sample Co",
+                "city": "上海",
+                "positionCategory": "后端开发",
+                "jd": {
+                    "text": (
+                        "负责 Python FastAPI 后端服务、LLM Agent 工具链和 RAG "
+                        "数据管道建设。"
+                    )
+                },
+            },
+            {
+                "sampleId": "target-side-localization",
+                "title": "日语 LQA 远程兼职",
+                "company": "Side Sample Co",
+                "city": "远程",
+                "positionCategory": "本地化",
+                "jd": {"text": "远程兼职，负责日语本地化、MTPE 和 LQA 质量检查。"},
+            },
         ],
     }
 

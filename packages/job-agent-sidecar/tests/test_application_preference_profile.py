@@ -13,7 +13,12 @@ from ggr_sidecar.application_preferences import (
 )
 from ggr_sidecar.cli import main as cli_main
 
-from test_preference_evidence_package import recent_applications_artifact
+from test_preference_evidence_package import (
+    candidate_statement_artifact,
+    capability_profile_artifact,
+    recent_applications_artifact,
+    target_jd_samples_artifact,
+)
 
 
 def test_generate_application_preference_profile_writes_valid_artifact(
@@ -67,6 +72,48 @@ def test_generate_application_preference_profile_writes_valid_artifact(
                 "negativeSignals",
             }
             assert item["evidenceRefs"]
+
+
+def test_generate_cold_start_application_preference_profile_has_lower_confidence(
+    tmp_path: Path,
+) -> None:
+    evidence_path = write_cold_start_evidence_package(tmp_path)
+    output_path = tmp_path / "cold-start-application-preference-profile.json"
+
+    result = generate_application_preference_profile_from_file(
+        evidence_path,
+        output_path=output_path,
+        llm_client=lambda _messages: cold_start_profile_payload(evidence_path),
+    )
+
+    assert result.ok is True
+    assert result.status == "ok"
+    written = json.loads(output_path.read_text(encoding="utf-8"))
+    assert written["profileConfidence"] == "medium"
+    assert written["evidenceStrength"]["recentApplicationEvidence"] == "none"
+    assert written["evidenceStrength"]["recentApplicationsWithJd"] == "none"
+    assert "historical application evidence is missing" in written["summary"]
+    assert written["uncertainties"][0]["label"] == "Historical application evidence missing"
+
+
+def test_cold_start_application_preference_profile_rejects_high_confidence(
+    tmp_path: Path,
+) -> None:
+    evidence_path = write_cold_start_evidence_package(tmp_path)
+    output_path = tmp_path / "cold-start-profile.json"
+    payload = cold_start_profile_payload(evidence_path)
+    payload["profileConfidence"] = "high"
+
+    result = generate_application_preference_profile_from_file(
+        evidence_path,
+        output_path=output_path,
+        llm_client=lambda _messages: payload,
+    )
+
+    assert result.ok is False
+    assert result.status == "schema_error"
+    assert output_path.exists() is False
+    assert result.validationErrors[0].loc == ["profileConfidence"]
 
 
 def test_profile_validation_rejects_invented_evidence_refs(tmp_path: Path) -> None:
@@ -288,6 +335,21 @@ def write_evidence_package(
     return path
 
 
+def write_cold_start_evidence_package(tmp_path: Path) -> Path:
+    package = build_preference_evidence_package(
+        candidate_statement_artifact=candidate_statement_artifact(),
+        capability_profile_artifact=capability_profile_artifact(),
+        target_jd_samples_artifact=target_jd_samples_artifact(),
+        now="2026-07-08T10:00:00.000Z",
+    )
+    path = tmp_path / "cold-start-preference-evidence-package.json"
+    path.write_text(
+        json.dumps(package.model_dump(exclude_none=True), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return path
+
+
 def valid_profile_payload(
     evidence_path: Path,
     *,
@@ -374,6 +436,83 @@ def valid_profile_payload(
         "summary": (
             "Decision Evidence only: recent applications support AI backend as the "
             "main track while remote localization remains side-track only."
+        ),
+        "freshnessMetadata": {
+            "promptVersion": "application-preference-profile.prompt.v1",
+            "cleanerVersion": package["cleanerVersion"],
+            "evidencePackageId": package["packageId"],
+            "evidencePackageGeneratedAt": package["generatedAt"],
+            "sourceFingerprints": package["sourceFingerprints"],
+            "staleReasons": [],
+        },
+        "preferenceEvidenceUse": (
+            "decision_evidence_only_not_application_authorization"
+        ),
+    }
+
+
+def cold_start_profile_payload(evidence_path: Path) -> dict[str, Any]:
+    package = json.loads(evidence_path.read_text(encoding="utf-8"))
+    refs = [entry["id"] for entry in package["evidenceIndex"]]
+    main_refs = [
+        ref
+        for ref in refs
+        if ref in {"ev-candidate-statement", "ev-capability-profile", "ev-target-jd-sample-001"}
+    ]
+    side_refs = [ref for ref in refs if ref == "ev-target-jd-sample-002"]
+    return {
+        "schemaVersion": "application-preference-profile.v1",
+        "profileId": "app-pref-cold-start-test",
+        "generatedAt": "2026-07-08T10:01:00.000Z",
+        "modelScene": "application_preference_profile",
+        "profileConfidence": "medium",
+        "evidenceStrength": {
+            "recentApplicationEvidence": "none",
+            "recentApplicationsWithJd": "none",
+            "candidateStatement": "strong",
+            "capabilityProfile": "strong",
+            "targetJdSamples": "moderate",
+            "clarificationAnswers": "missing",
+        },
+        "mainTrackPreferences": [
+            preference_item(
+                label="Python backend and LLM Agent roles",
+                track="main",
+                refs=main_refs,
+            )
+        ],
+        "sideTrackPreferences": [
+            preference_item(
+                label="Remote Japanese localization only as side track",
+                track="side",
+                refs=side_refs,
+            )
+        ],
+        "sideTrackOnlyPatterns": [],
+        "excludePatterns": [],
+        "downrankPatterns": [],
+        "uncertainties": [
+            {
+                "label": "Historical application evidence missing",
+                "reason": "No Recent Application Evidence was provided.",
+                "evidenceRefs": [],
+                "impact": "Keep confidence below high until historical evidence exists.",
+            }
+        ],
+        "preferenceActionSuggestions": [
+            {
+                "type": "target_jd_sample_request",
+                "suggestion": "Provide more recent application history when available.",
+                "rationale": "Cold start has no historical application evidence.",
+                "evidenceRefs": [],
+                "nonAuthorizing": True,
+                "grantsApplicationAuthorization": False,
+            }
+        ],
+        "summary": (
+            "Cold-start profile: historical application evidence is missing, so "
+            "confidence stays below high while candidate statement and capability "
+            "evidence support Python LLM backend as the main track."
         ),
         "freshnessMetadata": {
             "promptVersion": "application-preference-profile.prompt.v1",

@@ -67,7 +67,10 @@ def build_parser() -> argparse.ArgumentParser:
         "build-preference-evidence",
         help="Build a redacted Preference Evidence Package from recent applications with JD.",
     )
-    preference_evidence.add_argument("--recent-applications", type=Path, required=True)
+    preference_evidence.add_argument("--recent-applications", type=Path)
+    preference_evidence.add_argument("--candidate-statement", type=Path)
+    preference_evidence.add_argument("--capability-profile", type=Path)
+    preference_evidence.add_argument("--target-jd-samples", type=Path)
     preference_evidence.add_argument("--clarification-answers", type=Path)
     preference_evidence.add_argument("--output", type=Path)
     preference_evidence.add_argument("--now")
@@ -223,6 +226,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "build-preference-evidence":
         result = build_preference_evidence_package_from_file(
             args.recent_applications,
+            candidate_statement_path=args.candidate_statement,
+            capability_profile_path=args.capability_profile,
+            target_jd_samples_path=args.target_jd_samples,
             clarification_answers_path=args.clarification_answers,
             now=args.now,
         )
