@@ -12,6 +12,12 @@ const defaultLimit = 200
 const maxLimit = 500
 const noNewItemStopThreshold = 2
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+const commandStoppingReasonCodes = new Set([
+  'BOSS_LOGIN_REQUIRED',
+  'BOSS_SAFETY_VERIFICATION_REQUIRED',
+  'BOSS_ABNORMAL_ENVIRONMENT',
+  'BOSS_SEARCH_LIST_UNAVAILABLE',
+])
 
 export async function runMarketJobs ({
   fromBrowser = false,
@@ -191,7 +197,7 @@ export async function runMarketJobsOnOpenPage (page, {
     while (shouldContinue) {
       const listResult = await extractMarketJobsListFromPage(page)
       if (!listResult.ok) {
-        sample.status = isPlatformRiskReason(listResult.reasonCode) ? 'blocked' : 'failed'
+        sample.status = isCommandStoppingReason(listResult.reasonCode) ? 'blocked' : 'failed'
         sample.reasonCode = listResult.reasonCode
         sample.endedAt = captureTime
         artifact.ok = false
@@ -575,6 +581,9 @@ function createBaseArtifact ({ captureTime, keywords, cities, requestedLimit, in
       validJobIdentityAnchorCount: 0,
       invalidJobIdentityAnchorCount: 0,
       reasonCodes: {},
+      stopped: 0,
+      partial: 0,
+      blockingReasonCode: null,
       contactStates: {},
       identityConfidence: {},
     },
@@ -690,6 +699,9 @@ function summarizeMarketArtifact (artifact) {
     failed: 0,
     blocked: 0,
     pending: 0,
+    stopped: 0,
+    partial: 0,
+    blockingReasonCode: null,
     reasonCodes: {},
     contactStates: {},
     identityConfidence: {},
@@ -699,6 +711,11 @@ function summarizeMarketArtifact (artifact) {
     summary[status] = (summary[status] ?? 0) + 1
     summary.capturedObservationCount += Number.isFinite(Number(sample.capturedCount)) ? Number(sample.capturedCount) : 0
     if (sample.reasonCode) summary.reasonCodes[sample.reasonCode] = (summary.reasonCodes[sample.reasonCode] ?? 0) + 1
+    if (['blocked', 'failed'].includes(status)) {
+      summary.stopped += 1
+      summary.partial += 1
+      if (!summary.blockingReasonCode && sample.reasonCode) summary.blockingReasonCode = sample.reasonCode
+    }
   }
   for (const job of artifact.jobs) {
     summary.observationCount += Array.isArray(job.observations) ? job.observations.length : 0
@@ -783,12 +800,8 @@ function failure (reasonCode, error) {
   }
 }
 
-function isPlatformRiskReason (reasonCode) {
-  return [
-    'BOSS_LOGIN_REQUIRED',
-    'BOSS_SAFETY_VERIFICATION_REQUIRED',
-    'BOSS_ABNORMAL_ENVIRONMENT',
-  ].includes(reasonCode)
+function isCommandStoppingReason (reasonCode) {
+  return commandStoppingReasonCodes.has(reasonCode)
 }
 
 function buildMissingJobFingerprint ({ title, company, salaryText, city, sampleKey, rank }) {

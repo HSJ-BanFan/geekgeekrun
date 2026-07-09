@@ -5,6 +5,7 @@ import path from 'node:path'
 import { test } from 'node:test'
 
 import {
+  readMarketJobsListStateInPage,
   runMarketJobs,
   runMarketJobsOnOpenPage,
 } from './market-jobs.mjs'
@@ -392,8 +393,169 @@ test('market-jobs stops with a partial artifact when the search list is blocked'
     assert.equal(artifact.reasonCode, 'BOSS_SAFETY_VERIFICATION_REQUIRED')
     assert.equal(artifact.samples[0].status, 'blocked')
     assert.equal(artifact.samples[0].endedAt, '2026-07-09T08:00:00.000Z')
+    assert.equal(artifact.statusSummary.stopped, 1)
+    assert.equal(artifact.statusSummary.blocked, 1)
+    assert.equal(artifact.statusSummary.partial, 1)
+    assert.equal(artifact.statusSummary.blockingReasonCode, 'BOSS_SAFETY_VERIFICATION_REQUIRED')
+    assert.equal(artifact.statusSummary.reasonCodes.BOSS_SAFETY_VERIFICATION_REQUIRED, 1)
     assert.deepEqual(artifact.jobs, [])
   })
+})
+
+test('market-jobs stops on login expiration after preserving completed sample data', async () => {
+  await withTempOutput(async ({ outputPath }) => {
+    const page = createMarketJobsPageFake({
+      sampleBatches: [
+        [[marketJob({ jobId: 'safe-job', title: 'AI Agent 工程师' })]],
+        [[]],
+      ],
+      sampleFailures: ['', 'BOSS_LOGIN_REQUIRED'],
+    })
+
+    const result = await runMarketJobsOnOpenPage(page, {
+      keywords: ['AI', 'Python'],
+      cities: [{ cityInput: '上海', cityCode: '101020100' }],
+      limit: 1,
+      outputPath,
+      navigationSettleMs: 0,
+      scrollSettleMs: 0,
+      now: new Date('2026-07-09T08:00:00.000Z'),
+    })
+
+    assert.equal(result.ok, false)
+    assert.equal(result.reasonCode, 'BOSS_LOGIN_REQUIRED')
+    assert.equal(result.jobCount, 1)
+    assert.equal(result.statusSummary.ok, 1)
+    assert.equal(result.statusSummary.blocked, 1)
+    assert.equal(result.statusSummary.stopped, 1)
+    assert.equal(result.statusSummary.partial, 1)
+    assert.equal(result.statusSummary.blockingReasonCode, 'BOSS_LOGIN_REQUIRED')
+
+    const artifact = JSON.parse(fs.readFileSync(outputPath, 'utf8'))
+    assert.equal(artifact.ok, false)
+    assert.equal(artifact.reasonCode, 'BOSS_LOGIN_REQUIRED')
+    assert.deepEqual(artifact.samples.map(sample => sample.status), ['ok', 'blocked'])
+    assert.deepEqual(artifact.samples.map(sample => sample.reasonCode), ['LIMIT_REACHED', 'BOSS_LOGIN_REQUIRED'])
+    assert.equal(artifact.jobs.length, 1)
+    assert.equal(artifact.jobs[0].jobIdentity.jobId, 'safe-job')
+    assert.equal(artifact.statusSummary.reasonCodes.BOSS_LOGIN_REQUIRED, 1)
+  })
+})
+
+test('market-jobs stops on abnormal environment with a blocked partial artifact', async () => {
+  await withTempOutput(async ({ outputPath }) => {
+    const page = createMarketJobsPageFake({
+      blockedReasonCode: 'BOSS_ABNORMAL_ENVIRONMENT',
+    })
+
+    const result = await runMarketJobsOnOpenPage(page, {
+      keywords: ['AI'],
+      cities: [{ cityInput: '上海', cityCode: '101020100' }],
+      limit: 10,
+      outputPath,
+      navigationSettleMs: 0,
+      scrollSettleMs: 0,
+      now: new Date('2026-07-09T08:00:00.000Z'),
+    })
+
+    assert.equal(result.ok, false)
+    assert.equal(result.reasonCode, 'BOSS_ABNORMAL_ENVIRONMENT')
+
+    const artifact = JSON.parse(fs.readFileSync(outputPath, 'utf8'))
+    assert.equal(artifact.samples[0].status, 'blocked')
+    assert.equal(artifact.statusSummary.stopped, 1)
+    assert.equal(artifact.statusSummary.partial, 1)
+    assert.equal(artifact.statusSummary.blockingReasonCode, 'BOSS_ABNORMAL_ENVIRONMENT')
+    assert.equal(artifact.statusSummary.reasonCodes.BOSS_ABNORMAL_ENVIRONMENT, 1)
+  })
+})
+
+test('market-jobs stops when the search list DOM is unavailable after navigation', async () => {
+  await withTempOutput(async ({ outputPath }) => {
+    const page = createMarketJobsPageFake({
+      blockedReasonCode: 'BOSS_SEARCH_LIST_UNAVAILABLE',
+    })
+
+    const result = await runMarketJobsOnOpenPage(page, {
+      keywords: ['AI'],
+      cities: [{ cityInput: '上海', cityCode: '101020100' }],
+      limit: 10,
+      outputPath,
+      navigationSettleMs: 0,
+      scrollSettleMs: 0,
+      now: new Date('2026-07-09T08:00:00.000Z'),
+    })
+
+    assert.equal(result.ok, false)
+    assert.equal(result.reasonCode, 'BOSS_SEARCH_LIST_UNAVAILABLE')
+
+    const artifact = JSON.parse(fs.readFileSync(outputPath, 'utf8'))
+    assert.equal(artifact.samples[0].status, 'blocked')
+    assert.equal(artifact.statusSummary.stopped, 1)
+    assert.equal(artifact.statusSummary.partial, 1)
+    assert.equal(artifact.statusSummary.blockingReasonCode, 'BOSS_SEARCH_LIST_UNAVAILABLE')
+    assert.equal(artifact.statusSummary.reasonCodes.BOSS_SEARCH_LIST_UNAVAILABLE, 1)
+  })
+})
+
+test('market-jobs ordinary sample exhaustion continues with subsequent samples', async () => {
+  await withTempOutput(async ({ outputPath }) => {
+    const visitedUrls = []
+    const page = createMarketJobsPageFake({
+      sampleBatches: [
+        [
+          [marketJob({ jobId: 'ai-job', title: 'AI 工程师' })],
+          [marketJob({ jobId: 'ai-job', title: 'AI 工程师' })],
+          [marketJob({ jobId: 'ai-job', title: 'AI 工程师' })],
+        ],
+        [
+          [marketJob({ jobId: 'python-job', title: 'Python 工程师' })],
+          [marketJob({ jobId: 'python-job', title: 'Python 工程师' })],
+          [marketJob({ jobId: 'python-job', title: 'Python 工程师' })],
+        ],
+      ],
+      onGoto: url => visitedUrls.push(url),
+    })
+
+    const result = await runMarketJobsOnOpenPage(page, {
+      keywords: ['AI', 'Python'],
+      cities: [{ cityInput: '上海', cityCode: '101020100' }],
+      limit: 5,
+      outputPath,
+      navigationSettleMs: 0,
+      scrollSettleMs: 0,
+      now: new Date('2026-07-09T08:00:00.000Z'),
+    })
+
+    assert.equal(result.ok, true)
+    assert.equal(result.reasonCode, null)
+    assert.equal(result.sampleCount, 2)
+    assert.equal(result.jobCount, 2)
+    assert.equal(visitedUrls.length, 2)
+
+    const artifact = JSON.parse(fs.readFileSync(outputPath, 'utf8'))
+    assert.deepEqual(artifact.samples.map(sample => sample.status), ['ok', 'ok'])
+    assert.deepEqual(artifact.samples.map(sample => sample.reasonCode), ['NO_NEW_ITEMS', 'NO_NEW_ITEMS'])
+    assert.deepEqual(artifact.samples.map(sample => sample.capturedCount), [1, 1])
+    assert.equal(artifact.statusSummary.stopped, 0)
+    assert.equal(artifact.statusSummary.blocked, 0)
+    assert.equal(artifact.statusSummary.partial, 0)
+    assert.equal(artifact.statusSummary.reasonCodes.NO_NEW_ITEMS, 2)
+  })
+})
+
+test('in-page market list reader reports missing list DOM as a stable stop reason', () => {
+  const state = withPageGlobals({
+    document: {
+      body: { innerText: '搜索结果正在加载' },
+      querySelectorAll: () => [],
+    },
+    location: { href: 'https://www.zhipin.com/web/geek/jobs?query=AI&city=101020100' },
+  }, () => readMarketJobsListStateInPage())
+
+  assert.equal(state.ok, false)
+  assert.equal(state.reasonCode, 'BOSS_SEARCH_LIST_UNAVAILABLE')
+  assert.equal(state.jobs.length, 0)
 })
 
 test('market-jobs browser crawl performs only read-only navigation and scroll operations', async () => {
@@ -610,6 +772,7 @@ function createMarketJobsPageFake ({
   batches = [[]],
   sampleBatches = null,
   blockedReasonCode = '',
+  sampleFailures = [],
   onGoto = () => {},
   failOnChatHistoryAccess = false,
 } = {}) {
@@ -633,12 +796,13 @@ function createMarketJobsPageFake ({
         throw new Error('market-jobs attempted to access chat history sources')
       }
       if (source.includes('readMarketJobsListStateInPage')) {
-        if (blockedReasonCode) {
+        const currentBlockedReasonCode = getCurrentBlockedReasonCode()
+        if (currentBlockedReasonCode) {
           return {
             ok: false,
-            reasonCode: blockedReasonCode,
+            reasonCode: currentBlockedReasonCode,
             url: currentUrl,
-            visibleText: blockedReasonCode,
+            visibleText: currentBlockedReasonCode,
             jobs: [],
           }
         }
@@ -663,6 +827,11 @@ function createMarketJobsPageFake ({
     const batch = activeBatches[Math.min(batchIndex, activeBatches.length - 1)] ?? []
     return batch.map((job, index) => ({ sourceRank: index + 1, ...job }))
   }
+
+  function getCurrentBlockedReasonCode () {
+    const sampleFailure = sampleFailures[Math.min(Math.max(sampleIndex, 0), sampleFailures.length - 1)]
+    return sampleFailure || blockedReasonCode
+  }
 }
 
 function withTempOutput (callback) {
@@ -677,5 +846,24 @@ function withTempOutput (callback) {
   } catch (err) {
     cleanup()
     throw err
+  }
+}
+
+function withPageGlobals ({ document, location }, callback) {
+  const globalKeys = ['document', 'location']
+  const savedGlobals = globalKeys.map(key => [
+    key,
+    Object.prototype.hasOwnProperty.call(globalThis, key),
+    globalThis[key],
+  ])
+  if (document !== undefined) globalThis.document = document
+  if (location !== undefined) globalThis.location = location
+  try {
+    return callback()
+  } finally {
+    for (const [key, hadOwn, value] of savedGlobals) {
+      if (hadOwn) globalThis[key] = value
+      else delete globalThis[key]
+    }
   }
 }
