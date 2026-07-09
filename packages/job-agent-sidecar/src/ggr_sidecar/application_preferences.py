@@ -382,7 +382,7 @@ class ApplicationPreferenceProfileValidationError(ValueError):
         validation_errors: list[ValidationFailure],
     ) -> None:
         super().__init__(status)
-        self.status = status
+        self.status: ApplicationPreferenceProfileStatus = status
         self.validation_errors = validation_errors
 
 
@@ -1251,8 +1251,9 @@ def _target_jd_sample_items(value: dict[str, Any] | list[Any] | None) -> list[An
 
 
 def _coerce_target_jd_sample_record(value: Any, index: int) -> dict[str, Any]:
-    raw = value if isinstance(value, dict) else {"text": value}
-    jd = raw.get("jd") if isinstance(raw.get("jd"), dict) else {}
+    raw: dict[str, Any] = value if isinstance(value, dict) else {"text": value}
+    raw_jd = raw.get("jd")
+    jd: dict[str, Any] = raw_jd if isinstance(raw_jd, dict) else {}
     jd_text = jd.get("text") or raw.get("jdText") or raw.get("description") or raw.get("text")
     sample_id = _string(raw.get("sampleId")) or _string(raw.get("id")) or f"target-{index:03d}"
     return {
@@ -1286,16 +1287,17 @@ def _preference_input_strings(value: Any) -> list[str]:
         text = _normalize_text(value)
         return [text] if text else []
     if isinstance(value, list):
-        output: list[str] = []
+        list_output: list[str] = []
         for item in value[:12]:
-            output.extend(_preference_input_strings(item))
-            if len(output) >= 24:
+            list_output.extend(_preference_input_strings(item))
+            if len(list_output) >= 24:
                 break
-        return output
+        return list_output
     if not isinstance(value, dict):
         return []
 
-    profile = value.get("profile") if isinstance(value.get("profile"), dict) else value
+    raw_profile = value.get("profile")
+    profile: dict[str, Any] = raw_profile if isinstance(raw_profile, dict) else value
     preferred_keys = [
         "statement",
         "candidateStatement",
