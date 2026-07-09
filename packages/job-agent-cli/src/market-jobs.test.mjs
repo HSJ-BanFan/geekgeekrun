@@ -153,8 +153,13 @@ test('market-jobs browser mode writes a one-sample raw artifact from visible sea
     const artifact = JSON.parse(fs.readFileSync(outputPath, 'utf8'))
     assert.equal(artifact.schemaVersion, 'market-jobs.v1')
     assert.equal(artifact.captureMetadata.readOnly, true)
+    assert.equal(artifact.captureMetadata.authorization.applicationAuthorizationScope, 'none')
+    assert.equal(artifact.captureMetadata.authorization.marketEvidenceAuthorizesApplicationActions, false)
+    assert.equal(artifact.captureMetadata.authorization.issuesApplicationAuthorizationToken, false)
     assert.equal(artifact.captureMetadata.authorization.issuesApplicationAuthorization, false)
     assert.equal(artifact.captureMetadata.authorization.consumesApplicationAuthorizationToken, false)
+    assert.equal(artifact.captureMetadata.authorization.authorizationTokenIssued, false)
+    assert.equal(artifact.captureMetadata.authorization.authorizationTokenConsumed, false)
     assert.equal(artifact.sourceStrategy.list, 'boss_geek_search_results')
     assert.equal(artifact.sourceStrategy.jd, 'not_requested')
     assert.equal(artifact.sourceStrategy.browserActions, 'read_only_list_scroll')
@@ -169,6 +174,87 @@ test('market-jobs browser mode writes a one-sample raw artifact from visible sea
     assert.equal(artifact.jobs[0].observations[0].sampleKey, 'ai-agent__101020100')
     assert.equal(artifact.jobs[0].observations[0].rank, 1)
     assert.equal(artifact.jobs[1].contactState, 'contacted')
+  })
+})
+
+test('market-jobs raw artifact redacts browser state, secrets, action URLs, and resume paths', async () => {
+  await withTempOutput(async ({ outputPath }) => {
+    const page = createMarketJobsPageFake({
+      batches: [
+        [
+          {
+            ...marketJob({
+              jobId: 'privacy-job',
+              title: 'AI 工程师',
+              detailUrl: 'https://www.zhipin.com/job_detail/privacy-job.html?securityId=RAW_SECURITY_ID_SHOULD_NOT_PERSIST&ka=chat-entry',
+              sourceUrl: 'https://www.zhipin.com/web/geek/jobs?query=AI&city=101010100&securityId=RAW_SOURCE_SECURITY_ID&ka=chat-entry',
+              listText: [
+                'AI 工程师',
+                'cookies=COOKIE_CANARY_SHOULD_NOT_PERSIST',
+                'localStorage=LOCAL_STORAGE_CANARY_SHOULD_NOT_PERSIST',
+                'api_key=API_KEY_CANARY_SHOULD_NOT_PERSIST',
+                'token=TOKEN_CANARY_SHOULD_NOT_PERSIST',
+                'C:\\Users\\Private\\resume-market.pdf',
+                'https://img.bosszhipin.com/avatar/CANARY_AVATAR_URL.png',
+                'https://example.com/users/CANARY_HOMEPAGE_URL',
+                'https://www.zhipin.com/web/geek/chat?ka=chat-entry&securityId=CANARY_CHAT_SECURITY',
+              ].join('\n'),
+            }),
+            securityId: 'RAW_SECURITY_ID_FIELD_SHOULD_NOT_PERSIST',
+            cookies: 'COOKIE_FIELD_SHOULD_NOT_PERSIST',
+            localStorage: 'LOCAL_STORAGE_FIELD_SHOULD_NOT_PERSIST',
+            apiKey: 'API_KEY_FIELD_SHOULD_NOT_PERSIST',
+            resumePath: 'C:\\Users\\Private\\resume-field.pdf',
+            avatarUrl: 'https://img.bosszhipin.com/avatar/FIELD_AVATAR.png',
+            homepageUrl: 'https://example.com/FIELD_HOMEPAGE',
+            browserState: { localStorage: 'FULL_BROWSER_STATE_SHOULD_NOT_PERSIST' },
+          },
+        ],
+      ],
+    })
+
+    const result = await runMarketJobsOnOpenPage(page, {
+      keywords: ['AI'],
+      cities: [{ cityInput: '北京', cityCode: '101010100' }],
+      limit: 1,
+      outputPath,
+      navigationSettleMs: 0,
+      scrollSettleMs: 0,
+      now: new Date('2026-07-09T08:00:00.000Z'),
+    })
+
+    assert.equal(result.ok, true)
+    assert.equal(Object.hasOwn(result, 'jobs'), false)
+    assert.equal(Object.hasOwn(result, 'observations'), false)
+
+    const artifactText = fs.readFileSync(outputPath, 'utf8')
+    for (const forbidden of [
+      'COOKIE_CANARY_SHOULD_NOT_PERSIST',
+      'LOCAL_STORAGE_CANARY_SHOULD_NOT_PERSIST',
+      'API_KEY_CANARY_SHOULD_NOT_PERSIST',
+      'TOKEN_CANARY_SHOULD_NOT_PERSIST',
+      'RAW_SECURITY_ID_SHOULD_NOT_PERSIST',
+      'RAW_SOURCE_SECURITY_ID',
+      'RAW_SECURITY_ID_FIELD_SHOULD_NOT_PERSIST',
+      'COOKIE_FIELD_SHOULD_NOT_PERSIST',
+      'LOCAL_STORAGE_FIELD_SHOULD_NOT_PERSIST',
+      'API_KEY_FIELD_SHOULD_NOT_PERSIST',
+      'resume-market.pdf',
+      'resume-field.pdf',
+      'CANARY_AVATAR_URL',
+      'CANARY_HOMEPAGE_URL',
+      'CANARY_CHAT_SECURITY',
+      'FIELD_AVATAR',
+      'FIELD_HOMEPAGE',
+      'FULL_BROWSER_STATE_SHOULD_NOT_PERSIST',
+      'ka=chat-entry',
+    ]) {
+      assert.equal(artifactText.includes(forbidden), false, `artifact leaked ${forbidden}`)
+    }
+    assert.equal(artifactText.includes('[REDACTED_BROWSER_STATE]'), true)
+    assert.equal(artifactText.includes('[REDACTED_SECRET]'), true)
+    assert.equal(artifactText.includes('[REDACTED_RESUME_PATH]'), true)
+    assert.equal(artifactText.includes('[REDACTED_URL]'), true)
   })
 })
 
@@ -237,6 +323,70 @@ test('market-jobs enriches JD from detail DOM only when --include-jd is requeste
     assert.equal(artifact.jobs[0].jd.resolvedUrl.includes('secret'), false)
     assert.equal(artifact.jobs[0].detailUrlEvidence.url.includes('secret'), false)
     assert.deepEqual(artifact.jobs.map(job => job.jd.status), ['ok', 'ok'])
+  })
+})
+
+test('market-jobs combined --include-jd --analyze keeps stdout summary-only and analysis JD-free', async () => {
+  await withTempOutput(async ({ outputPath }) => {
+    const jdText = 'FULL_JD_TEXT_CANARY_FOR_RAW_ARTIFACT_ONLY 负责 AI Agent 平台研发。'
+    const accessedPageProps = new Set()
+    const basePage = createMarketJobsPageFake({
+      batches: [
+        [
+          marketJob({
+            jobId: 'combined-job',
+            title: 'AI Agent 后端开发',
+            contactState: 'uncontacted',
+            contactEvidenceText: '立即沟通',
+          }),
+        ],
+      ],
+      detailTextByJobId: {
+        'combined-job': {
+          jdText,
+          pageTitle: 'AI Agent 后端开发招聘',
+          evidenceText: '职位描述',
+        },
+      },
+    })
+    const page = new Proxy(basePage, {
+      get (target, prop, receiver) {
+        if (typeof prop === 'string') accessedPageProps.add(prop)
+        return Reflect.get(target, prop, receiver)
+      },
+    })
+
+    const result = await runMarketJobsOnOpenPage(page, {
+      keywords: ['AI Agent'],
+      cities: [{ cityInput: '上海', cityCode: '101020100' }],
+      limit: 1,
+      includeJd: true,
+      analyze: true,
+      outputPath,
+      navigationSettleMs: 0,
+      scrollSettleMs: 0,
+      detailNavigationSettleMs: 0,
+      now: new Date('2026-07-09T08:00:00.000Z'),
+    })
+
+    assert.equal(result.ok, true)
+    assert.equal(result.command, 'market-jobs')
+    assert.equal(Object.hasOwn(result, 'jobs'), false)
+    assert.equal(Object.hasOwn(result, 'observations'), false)
+    assert.equal(JSON.stringify(result).includes(jdText), false)
+
+    const rawArtifact = JSON.parse(fs.readFileSync(outputPath, 'utf8'))
+    assert.equal(rawArtifact.jobs[0].jd.text, jdText)
+    const analysisText = fs.readFileSync(result.analysisArtifactPath, 'utf8')
+    assert.equal(analysisText.includes(jdText), false)
+
+    const readOnlyPageProps = new Set(['url', 'goto', 'waitForFunction', 'evaluate'])
+    for (const prop of accessedPageProps) {
+      assert.equal(readOnlyPageProps.has(prop), true, `unexpected page operation: ${prop}`)
+    }
+    for (const forbidden of ['click', 'type', 'tap', 'uploadFile', 'keyboard', 'mouse', '$', '$$']) {
+      assert.equal(accessedPageProps.has(forbidden), false, `real action attempted: ${forbidden}`)
+    }
   })
 })
 
@@ -714,6 +864,27 @@ test('market-jobs browser crawl performs only read-only navigation and scroll op
       assert.equal(accessedPageProps.has(forbidden), false, `real action attempted: ${forbidden}`)
     }
   })
+})
+
+test('market-jobs module does not depend on application action, token, upload, or history paths', () => {
+  const moduleSource = fs.readFileSync(new URL('./market-jobs.mjs', import.meta.url), 'utf8')
+  for (const forbidden of [
+    './authorized-action.mjs',
+    './authorization-token.mjs',
+    './recent-applications.mjs',
+    'runAuthorizedActionIntent',
+    'issueAuthorizationToken',
+    'consumeAuthorizationToken',
+    'sendGreetingToMostRecentChat',
+    'startChatOnCurrentJob',
+    'runCurrentJobBrowserActions',
+    'uploadFile',
+    'chatStore',
+    'friendInfos',
+    'recentApplications',
+  ]) {
+    assert.equal(moduleSource.includes(forbidden), false, `market-jobs reached forbidden path: ${forbidden}`)
+  }
 })
 
 test('market-jobs browser mode crawls Cartesian samples and globally dedupes stable jobs', async () => {

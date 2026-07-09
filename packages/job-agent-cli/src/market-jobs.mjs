@@ -664,8 +664,13 @@ function createBaseArtifact ({ captureTime, keywords, cities, requestedLimit, in
       includeJd,
       readOnly: true,
       authorization: {
+        applicationAuthorizationScope: 'none',
+        marketEvidenceAuthorizesApplicationActions: false,
+        issuesApplicationAuthorizationToken: false,
         issuesApplicationAuthorization: false,
         consumesApplicationAuthorizationToken: false,
+        authorizationTokenIssued: false,
+        authorizationTokenConsumed: false,
       },
     },
     sourceStrategy: {
@@ -698,10 +703,10 @@ function createBaseArtifact ({ captureTime, keywords, cities, requestedLimit, in
 
 function normalizeMarketJob (rawJob, { sampleKey, rank, sourceUrl = '', includeJd = false }) {
   const jobId = firstString(rawJob?.jobId, rawJob?.encryptJobId, rawJob?.encryptId)
-  const title = firstString(rawJob?.title, rawJob?.jobName, rawJob?.positionName)
-  const company = firstString(rawJob?.company, rawJob?.companyName, rawJob?.brandName)
-  const city = firstString(rawJob?.city, rawJob?.cityName)
-  const salaryText = firstString(rawJob?.salaryText, rawJob?.salary, rawJob?.salaryDesc)
+  const title = safeMarketJobsArtifactText(rawJob?.title, rawJob?.jobName, rawJob?.positionName)
+  const company = safeMarketJobsArtifactText(rawJob?.company, rawJob?.companyName, rawJob?.brandName)
+  const city = safeMarketJobsArtifactText(rawJob?.city, rawJob?.cityName)
+  const salaryText = safeMarketJobsArtifactText(rawJob?.salaryText, rawJob?.salary, rawJob?.salaryDesc)
   const fingerprint = buildMissingJobFingerprint({
     title,
     company,
@@ -726,9 +731,10 @@ function normalizeMarketJob (rawJob, { sampleKey, rank, sourceUrl = '', includeJ
     evidenceText: firstString(rawJob?.contactEvidenceText, rawJob?.contactStateEvidence?.text),
     listText: rawJob?.listText,
   })
+  const contactEvidenceText = safeMarketJobsArtifactText(contact.evidenceText)
   const contactStateEvidence = {
-    text: contact.evidenceText,
-    source: contact.evidenceText ? 'visible_page_text' : 'missing_visible_page_text',
+    text: contactEvidenceText,
+    source: contactEvidenceText ? 'visible_page_text' : 'missing_visible_page_text',
   }
   return {
     jobIdentity,
@@ -737,23 +743,23 @@ function normalizeMarketJob (rawJob, { sampleKey, rank, sourceUrl = '', includeJ
     company,
     city,
     salaryText,
-    experience: firstString(rawJob?.experience),
-    degree: firstString(rawJob?.degree),
-    positionCategory: firstString(rawJob?.positionCategory),
-    tags: uniqueStrings(rawJob?.tags ?? []),
+    experience: safeMarketJobsArtifactText(rawJob?.experience),
+    degree: safeMarketJobsArtifactText(rawJob?.degree),
+    positionCategory: safeMarketJobsArtifactText(rawJob?.positionCategory),
+    tags: safeMarketJobsArtifactTextList(rawJob?.tags ?? []),
     contactState: contact.state,
-    contactEvidenceText: contact.evidenceText,
+    contactEvidenceText,
     contactStateEvidence,
     recruiter: {
-      name: firstString(rawJob?.recruiter?.name),
-      title: firstString(rawJob?.recruiter?.title),
-      activeText: firstString(rawJob?.recruiter?.activeText),
+      name: safeMarketJobsArtifactText(rawJob?.recruiter?.name),
+      title: safeMarketJobsArtifactText(rawJob?.recruiter?.title),
+      activeText: safeMarketJobsArtifactText(rawJob?.recruiter?.activeText),
     },
     companySummary: {
-      industry: firstString(rawJob?.companySummary?.industry),
-      financingStage: firstString(rawJob?.companySummary?.financingStage),
-      size: firstString(rawJob?.companySummary?.size),
-      tags: uniqueStrings(rawJob?.companySummary?.tags ?? []),
+      industry: safeMarketJobsArtifactText(rawJob?.companySummary?.industry),
+      financingStage: safeMarketJobsArtifactText(rawJob?.companySummary?.financingStage),
+      size: safeMarketJobsArtifactText(rawJob?.companySummary?.size),
+      tags: safeMarketJobsArtifactTextList(rawJob?.companySummary?.tags ?? []),
     },
     detailUrlEvidence: buildMarketJobDetailUrlEvidence(rawJob, jobId),
     jd: includeJd
@@ -765,9 +771,9 @@ function normalizeMarketJob (rawJob, { sampleKey, rank, sourceUrl = '', includeJ
         rank,
         sourceRank: Number.isFinite(Number(rawJob?.sourceRank)) ? Number(rawJob.sourceRank) : rank,
         contactState: contact.state,
-        contactEvidenceText: contact.evidenceText,
+        contactEvidenceText,
         contactStateEvidence,
-        listText: firstString(rawJob?.listText),
+        listText: safeMarketJobsArtifactText(rawJob?.listText),
         source: {
           type: 'boss_geek_search_results',
           url: sanitizeMarketJobsSourceUrl(firstString(rawJob?.sourceUrl, sourceUrl)),
@@ -1324,6 +1330,43 @@ function sanitizeMarketJobsDetailUrl (value) {
   } catch {
     return raw.replace(/([?&]securityId=)[^&#]+/i, '$1[REDACTED]')
   }
+}
+
+function safeMarketJobsArtifactText (...values) {
+  const raw = firstString(...values)
+  if (!raw) return ''
+  return raw
+    .replace(/\b(?:cookies?|localStorage|local storage|browserState|browser state)\b\s*[:=]\s*[^\n\r]+/gi, '[REDACTED_BROWSER_STATE]')
+    .replace(/\b(?:api[_-]?key|access[_-]?token|token|secret|password)\b\s*[:=]\s*[^\s,;，；]+/gi, '[REDACTED_SECRET]')
+    .replace(/([?&](?:securityId|ka|chatId|chatid|sessionId|token|api[_-]?key)=)[^&#\s]+/gi, '$1[REDACTED]')
+    .replace(/[A-Za-z]:\\[^\n\r\t"'<>]*(?:resume|简历)[^\n\r\t"'<>]*/gi, '[REDACTED_RESUME_PATH]')
+    .replace(/(?:^|[\s"'(])\/[^\n\r\t"'<>]*(?:resume|简历)[^\n\r\t"'<>]*/gi, match => `${match[0] === '/' ? '' : match[0]}[REDACTED_RESUME_PATH]`)
+    .replace(/\bhttps?:\/\/[^\s"'<>]+/gi, sanitizeMarketJobsTextUrl)
+}
+
+function safeMarketJobsArtifactTextList (items) {
+  return uniqueStrings((Array.isArray(items) ? items : []).map(item => safeMarketJobsArtifactText(item)))
+}
+
+function sanitizeMarketJobsTextUrl (rawUrl) {
+  const raw = firstString(rawUrl)
+  if (!raw) return ''
+  let trailing = ''
+  let candidate = raw
+  while (/[),.;，。；]$/.test(candidate)) {
+    trailing = `${candidate.at(-1)}${trailing}`
+    candidate = candidate.slice(0, -1)
+  }
+  try {
+    const url = new URL(candidate, 'https://www.zhipin.com')
+    if (url.hostname.endsWith('zhipin.com') && url.pathname.startsWith('/job_detail/')) {
+      return `${sanitizeMarketJobsDetailUrl(url.toString())}${trailing}`
+    }
+    if (url.hostname.endsWith('zhipin.com') && url.pathname.startsWith('/web/geek/jobs')) {
+      return `${sanitizeMarketJobsSourceUrl(url.toString())}${trailing}`
+    }
+  } catch {}
+  return `[REDACTED_URL]${trailing}`
 }
 
 const categoryDefinitions = [
