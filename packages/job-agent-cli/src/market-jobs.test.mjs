@@ -69,6 +69,21 @@ test('market-jobs --plan-only expands repeatable keywords and cities as a Cartes
   ])
 })
 
+test('market-jobs --plan-only keeps sample keys unique when keyword slugs collide', async () => {
+  const result = await runMarketJobs({
+    planOnly: true,
+    keywords: ['全栈', '后端'],
+    cities: ['上海'],
+    limit: 1,
+  })
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.plannedSamples.map(sample => sample.sampleKey), [
+    'keyword__101020100',
+    'keyword__101020100__2',
+  ])
+})
+
 test('market-jobs requires --from-browser unless --plan-only is set', async () => {
   const result = await runMarketJobs({
     fromBrowser: false,
@@ -220,7 +235,49 @@ test('market-jobs keeps low-confidence records when a visible card has no stable
     assert.equal(artifact.jobs.length, 1)
     assert.equal(artifact.jobs[0].jobIdentity.status, 'missing')
     assert.equal(artifact.jobs[0].jobIdentity.confidence, 'low')
+    assert.equal(artifact.jobs[0].jobIdentity.validJobIdentityAnchor, false)
+    assert.equal(artifact.jobs[0].jobIdentity.temporaryFingerprint.includes('数据标注兼职'), true)
     assert.equal(artifact.jobs[0].jobIdentity.fingerprint.includes('数据标注兼职'), true)
+    assert.equal(artifact.statusSummary.observationCount, 1)
+    assert.equal(artifact.statusSummary.lowConfidenceJobCount, 1)
+    assert.equal(artifact.statusSummary.missingIdentityJobCount, 1)
+  })
+})
+
+test('market-jobs does not duplicate a missing-id card seen again in the same sample', async () => {
+  await withTempOutput(async ({ outputPath }) => {
+    const missingJob = marketJob({
+      jobId: '',
+      title: '数据标注兼职',
+      company: 'Noise Co',
+      city: '远程',
+      salaryText: '200元/天',
+    })
+    const page = createMarketJobsPageFake({
+      batches: [
+        [missingJob],
+        [missingJob],
+        [missingJob],
+      ],
+    })
+
+    const result = await runMarketJobsOnOpenPage(page, {
+      keywords: ['数据'],
+      cities: [{ cityInput: '全国', cityCode: '100010000' }],
+      limit: 3,
+      outputPath,
+      navigationSettleMs: 0,
+      scrollSettleMs: 0,
+      now: new Date('2026-07-09T08:00:00.000Z'),
+    })
+
+    assert.equal(result.ok, true)
+    assert.equal(result.jobCount, 1)
+    const artifact = JSON.parse(fs.readFileSync(outputPath, 'utf8'))
+    assert.equal(artifact.samples[0].capturedCount, 1)
+    assert.equal(artifact.samples[0].reasonCode, 'NO_NEW_ITEMS')
+    assert.equal(artifact.statusSummary.observationCount, 1)
+    assert.equal(artifact.jobs[0].observations[0].rank, 1)
   })
 })
 
@@ -289,36 +346,101 @@ test('market-jobs browser crawl performs only read-only navigation and scroll op
   })
 })
 
-test('market-jobs browser mode rejects multi-sample crawling until the next slice', async () => {
+test('market-jobs browser mode crawls Cartesian samples and globally dedupes stable jobs', async () => {
   await withTempOutput(async ({ outputPath }) => {
+    const visitedUrls = []
     const page = createMarketJobsPageFake({
-      batches: [[marketJob({ jobId: 'job-1' })]],
+      sampleBatches: [
+        [
+          [
+            marketJob({
+              jobId: 'shared-job',
+              title: 'AI Agent 工程师',
+              contactEvidenceText: '立即沟通',
+              sourceUrl: 'https://www.zhipin.com/web/geek/jobs?query=AI&city=101010100&securityId=secret&ka=chat-entry',
+            }),
+            marketJob({ jobId: 'ai-bj', title: 'AI 平台工程师' }),
+          ],
+        ],
+        [
+          [
+            marketJob({ jobId: 'shared-job', title: 'AI Agent 工程师', contactEvidenceText: '继续沟通', contactState: 'contacted' }),
+            marketJob({ jobId: 'ai-sh', title: 'AI 应用工程师' }),
+          ],
+        ],
+        [
+          [
+            marketJob({ jobId: '', title: '数据标注兼职', company: 'Noise Co', salaryText: '200元/天' }),
+            marketJob({ jobId: 'py-bj', title: 'Python 后端工程师' }),
+          ],
+        ],
+        [
+          [
+            marketJob({ jobId: 'shared-job', title: 'AI Agent 工程师' }),
+            marketJob({ jobId: 'py-sh', title: 'Python 平台工程师' }),
+          ],
+        ],
+      ],
+      onGoto: url => visitedUrls.push(url),
     })
 
     const result = await runMarketJobsOnOpenPage(page, {
       keywords: ['AI', 'Python'],
-      cities: [{ cityInput: '北京', cityCode: '101010100' }],
-      limit: 1,
+      cities: [
+        { cityInput: '北京', cityCode: '101010100' },
+        { cityInput: '上海', cityCode: '101020100' },
+      ],
+      limit: 2,
       outputPath,
       navigationSettleMs: 0,
       scrollSettleMs: 0,
+      now: new Date('2026-07-09T08:00:00.000Z'),
     })
 
-    assert.equal(result.ok, false)
-    assert.equal(result.reasonCode, 'MARKET_JOBS_MULTI_SAMPLE_NOT_IMPLEMENTED')
-    assert.equal(fs.existsSync(outputPath), false)
-  })
-})
+    assert.equal(result.ok, true)
+    assert.equal(result.sampleCount, 4)
+    assert.equal(result.jobCount, 6)
+    assert.equal(result.statusSummary.observationCount, 8)
+    assert.equal(result.statusSummary.dedupedJobCount, 6)
+    assert.equal(result.statusSummary.lowConfidenceJobCount, 1)
+    assert.equal(result.statusSummary.identityConfidence.low, 1)
+    assert.equal(result.statusSummary.identityConfidence.high, 5)
+    assert.equal(visitedUrls.length, 4)
+    assert.deepEqual(visitedUrls.map(url => new URL(url).searchParams.get('query')), ['AI', 'AI', 'Python', 'Python'])
+    assert.deepEqual(visitedUrls.map(url => new URL(url).searchParams.get('city')), ['101010100', '101020100', '101010100', '101020100'])
 
-test('market-jobs rejects multi-sample browser mode before opening a browser', async () => {
-  const result = await runMarketJobs({
-    fromBrowser: true,
-    keywords: ['AI', 'Python'],
-    cities: ['北京'],
-  })
+    const artifact = JSON.parse(fs.readFileSync(outputPath, 'utf8'))
+    assert.deepEqual(artifact.samples.map(sample => sample.sampleKey), [
+      'ai__101010100',
+      'ai__101020100',
+      'python__101010100',
+      'python__101020100',
+    ])
+    assert.deepEqual(artifact.samples.map(sample => sample.capturedCount), [2, 2, 2, 2])
+    assert.deepEqual(artifact.samples.map(sample => sample.dedupedJobCount), [2, 2, 2, 2])
+    const sharedJob = artifact.jobs.find(job => job.jobIdentity.jobId === 'shared-job')
+    assert.equal(sharedJob.observations.length, 3)
+    assert.deepEqual(sharedJob.observations.map(observation => observation.sampleKey), [
+      'ai__101010100',
+      'ai__101020100',
+      'python__101020100',
+    ])
+    assert.deepEqual(sharedJob.observations.map(observation => observation.rank), [1, 1, 1])
+    assert.equal(sharedJob.observations[0].source.type, 'boss_geek_search_results')
+    assert.equal(sharedJob.observations[0].source.url.includes('query=AI'), true)
+    assert.equal(sharedJob.observations[0].source.url.includes('city=101010100'), true)
+    assert.equal(sharedJob.observations[0].source.url.includes('securityId'), false)
+    assert.equal(sharedJob.observations[0].source.url.includes('chat-entry'), false)
+    assert.equal(sharedJob.observations[1].contactState, 'contacted')
+    assert.equal(sharedJob.observations[1].contactEvidenceText, '继续沟通')
+    assert.equal(sharedJob.observations[1].listText.includes('AI Agent 工程师'), true)
 
-  assert.equal(result.ok, false)
-  assert.equal(result.reasonCode, 'MARKET_JOBS_MULTI_SAMPLE_NOT_IMPLEMENTED')
+    const missingJob = artifact.jobs.find(job => job.jobIdentity.status === 'missing')
+    assert.equal(missingJob.jobIdentity.confidence, 'low')
+    assert.equal(missingJob.jobIdentity.validJobIdentityAnchor, false)
+    assert.equal(missingJob.jobIdentity.temporaryFingerprint.includes('python__101010100'), true)
+    assert.equal(missingJob.jobIdentity.temporaryFingerprint.includes('1'), true)
+  })
 })
 
 test('market-jobs browser mode rejects analysis until the analysis slice exists', async () => {
@@ -375,8 +497,9 @@ function marketJob ({
   contactEvidenceText = '立即沟通',
   recruiter = { name: '王经理', title: '招聘经理', activeText: '刚刚活跃' },
   companySummary = { industry: '互联网', financingStage: 'B轮', size: '100-499人', tags: ['AI'] },
+  sourceUrl = '',
 } = {}) {
-  return {
+  const job = {
     jobId,
     title,
     company,
@@ -392,21 +515,27 @@ function marketJob ({
     companySummary,
     listText: `${title}\n${company}\n${salaryText}\n${contactEvidenceText}`,
   }
+  if (sourceUrl) job.sourceUrl = sourceUrl
+  return job
 }
 
 function createMarketJobsPageFake ({
   batches = [[]],
+  sampleBatches = null,
   blockedReasonCode = '',
   onGoto = () => {},
 } = {}) {
   let currentUrl = 'about:blank'
   let batchIndex = 0
+  let sampleIndex = -1
   return {
     url () {
       return currentUrl
     },
     async goto (url) {
       currentUrl = url
+      batchIndex = 0
+      sampleIndex += 1
       onGoto(url)
     },
     async waitForFunction () {},
@@ -425,7 +554,7 @@ function createMarketJobsPageFake ({
         return {
           ok: true,
           url: currentUrl,
-          jobs: batches[Math.min(batchIndex, batches.length - 1)] ?? [],
+          jobs: getCurrentBatch(),
         }
       }
       if (source.includes('scrollMarketJobsListInPage')) {
@@ -434,6 +563,14 @@ function createMarketJobsPageFake ({
       }
       return null
     },
+  }
+
+  function getCurrentBatch () {
+    const activeBatches = sampleBatches
+      ? sampleBatches[Math.min(Math.max(sampleIndex, 0), sampleBatches.length - 1)] ?? []
+      : batches
+    const batch = activeBatches[Math.min(batchIndex, activeBatches.length - 1)] ?? []
+    return batch.map((job, index) => ({ sourceRank: index + 1, ...job }))
   }
 }
 

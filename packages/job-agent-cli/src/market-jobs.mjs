@@ -81,13 +81,6 @@ export async function runMarketJobs ({
     requestedLimit: limitResult.limit,
   })
 
-  if (!planOnly && plannedSamples.length !== 1) {
-    return failure(
-      'MARKET_JOBS_MULTI_SAMPLE_NOT_IMPLEMENTED',
-      'browser-backed market-jobs currently supports exactly one keyword-city sample'
-    )
-  }
-
   if (!planOnly) {
     const opened = await openMarketJobsBrowser({ headless, browserUrl, cdpPort })
     try {
@@ -156,12 +149,6 @@ export async function runMarketJobsOnOpenPage (page, {
     cities: resolvedCities,
     requestedLimit: limitResult.limit,
   })
-  if (plannedSamples.length !== 1) {
-    return failure(
-      'MARKET_JOBS_MULTI_SAMPLE_NOT_IMPLEMENTED',
-      'browser-backed market-jobs currently supports exactly one keyword-city sample'
-    )
-  }
 
   const captureTime = toIso(now)
   const rawArtifactPath = resolveMarketJobsOutputPath(outputPath, captureTime)
@@ -174,85 +161,92 @@ export async function runMarketJobsOnOpenPage (page, {
   })
   await writeArtifact(rawArtifactPath, artifact)
 
-  const sample = {
-    ...plannedSamples[0],
-    status: 'pending',
-    reasonCode: null,
-    capturedCount: 0,
-    dedupedJobCount: 0,
-    scrollCount: 0,
-    noNewItemCount: 0,
-    startedAt: captureTime,
-    endedAt: null,
-  }
-  artifact.samples.push(sample)
-  artifact.statusSummary = summarizeMarketArtifact(artifact)
-  await writeArtifact(rawArtifactPath, artifact)
-
-  await openMarketJobsSearchPage(page, {
-    keyword: sample.keyword,
-    cityCode: sample.cityCode,
-    settleMs: navigationSettleMs,
-  })
-
-  const sampleObservationKeys = new Set()
   const jobByIdentityKey = new Map()
-  let shouldContinue = true
 
-  while (shouldContinue) {
-    const listResult = await extractMarketJobsListFromPage(page)
-    if (!listResult.ok) {
-      sample.status = isPlatformRiskReason(listResult.reasonCode) ? 'blocked' : 'failed'
-      sample.reasonCode = listResult.reasonCode
-      sample.endedAt = captureTime
-      artifact.ok = false
-      artifact.reasonCode = listResult.reasonCode
-      artifact.statusSummary = summarizeMarketArtifact(artifact)
-      await writeArtifact(rawArtifactPath, artifact)
-      return buildCommandSummary({
-        artifact,
-        rawArtifactPath,
-        analysisArtifactPath: null,
-      })
+  for (const plannedSample of plannedSamples) {
+    const sample = {
+      ...plannedSample,
+      status: 'pending',
+      reasonCode: null,
+      capturedCount: 0,
+      dedupedJobCount: 0,
+      scrollCount: 0,
+      noNewItemCount: 0,
+      startedAt: captureTime,
+      endedAt: null,
     }
-
-    const beforeCount = sample.capturedCount
-    for (const rawJob of listResult.jobs) {
-      if (sample.capturedCount >= limitResult.limit) break
-      const rank = sample.capturedCount + 1
-      const normalizedJob = normalizeMarketJob(rawJob, { sampleKey: sample.sampleKey, rank })
-      const observationKey = `${sample.sampleKey}|${normalizedJob.jobIdentity.key}`
-      if (sampleObservationKeys.has(observationKey)) continue
-      sampleObservationKeys.add(observationKey)
-      sample.capturedCount += 1
-      upsertMarketJob(artifact, jobByIdentityKey, normalizedJob)
-    }
-
-    sample.dedupedJobCount = countJobsObservedInSample(artifact.jobs, sample.sampleKey)
+    artifact.samples.push(sample)
     artifact.statusSummary = summarizeMarketArtifact(artifact)
     await writeArtifact(rawArtifactPath, artifact)
 
-    if (sample.capturedCount >= limitResult.limit) {
-      sample.status = 'ok'
-      sample.reasonCode = 'LIMIT_REACHED'
-      sample.endedAt = captureTime
-      shouldContinue = false
-      break
+    await openMarketJobsSearchPage(page, {
+      keyword: sample.keyword,
+      cityCode: sample.cityCode,
+      settleMs: navigationSettleMs,
+    })
+
+    const sampleObservationKeys = new Set()
+    let shouldContinue = true
+
+    while (shouldContinue) {
+      const listResult = await extractMarketJobsListFromPage(page)
+      if (!listResult.ok) {
+        sample.status = isPlatformRiskReason(listResult.reasonCode) ? 'blocked' : 'failed'
+        sample.reasonCode = listResult.reasonCode
+        sample.endedAt = captureTime
+        artifact.ok = false
+        artifact.reasonCode = listResult.reasonCode
+        artifact.statusSummary = summarizeMarketArtifact(artifact)
+        await writeArtifact(rawArtifactPath, artifact)
+        return buildCommandSummary({
+          artifact,
+          rawArtifactPath,
+          analysisArtifactPath: null,
+        })
+      }
+
+      const beforeCount = sample.capturedCount
+      for (const rawJob of listResult.jobs) {
+        if (sample.capturedCount >= limitResult.limit) break
+        const rank = getMarketJobObservationRank(rawJob, sample.capturedCount + 1)
+        const normalizedJob = normalizeMarketJob(rawJob, {
+          sampleKey: sample.sampleKey,
+          rank,
+          sourceUrl: listResult.url,
+        })
+        const observationKey = `${sample.sampleKey}|${normalizedJob.jobIdentity.key}`
+        if (sampleObservationKeys.has(observationKey)) continue
+        sampleObservationKeys.add(observationKey)
+        sample.capturedCount += 1
+        upsertMarketJob(artifact, jobByIdentityKey, normalizedJob)
+      }
+
+      sample.dedupedJobCount = countJobsObservedInSample(artifact.jobs, sample.sampleKey)
+      artifact.statusSummary = summarizeMarketArtifact(artifact)
+      await writeArtifact(rawArtifactPath, artifact)
+
+      if (sample.capturedCount >= limitResult.limit) {
+        sample.status = 'ok'
+        sample.reasonCode = 'LIMIT_REACHED'
+        sample.endedAt = captureTime
+        shouldContinue = false
+        break
+      }
+
+      if (sample.capturedCount === beforeCount) sample.noNewItemCount += 1
+      else sample.noNewItemCount = 0
+
+      if (sample.noNewItemCount >= noNewItemStopThreshold) {
+        sample.status = 'ok'
+        sample.reasonCode = 'NO_NEW_ITEMS'
+        sample.endedAt = captureTime
+        shouldContinue = false
+        break
+      }
+
+      await scrollMarketJobsList(page, { settleMs: scrollSettleMs })
+      sample.scrollCount += 1
     }
-
-    if (sample.capturedCount === beforeCount) sample.noNewItemCount += 1
-    else sample.noNewItemCount = 0
-
-    if (sample.noNewItemCount >= noNewItemStopThreshold) {
-      sample.status = 'ok'
-      sample.reasonCode = 'NO_NEW_ITEMS'
-      sample.endedAt = captureTime
-      shouldContinue = false
-      break
-    }
-
-    await scrollMarketJobsList(page, { settleMs: scrollSettleMs })
-    sample.scrollCount += 1
   }
 
   artifact.ok = true
@@ -449,10 +443,14 @@ export function readMarketJobsListStateInPage () {
 
 function buildPlannedSamples ({ keywords, cities, requestedLimit }) {
   const samples = []
+  const sampleKeyCounts = new Map()
   for (const keyword of keywords) {
     for (const city of cities) {
+      const baseSampleKey = `${slugKeyword(keyword)}__${city.cityCode}`
+      const seenCount = (sampleKeyCounts.get(baseSampleKey) ?? 0) + 1
+      sampleKeyCounts.set(baseSampleKey, seenCount)
       samples.push({
-        sampleKey: `${slugKeyword(keyword)}__${city.cityCode}`,
+        sampleKey: seenCount === 1 ? baseSampleKey : `${baseSampleKey}__${seenCount}`,
         keyword,
         cityInput: city.cityInput,
         cityCode: city.cityCode,
@@ -474,6 +472,11 @@ function normalizeLimit (value) {
     return { ok: false, reasonCode: 'LIMIT_EXCEEDS_MAX', error: `--limit must be less than or equal to ${maxLimit}` }
   }
   return { ok: true, limit: parsed }
+}
+
+function getMarketJobObservationRank (rawJob, fallbackRank) {
+  const sourceRank = Number(rawJob?.sourceRank)
+  return Number.isFinite(sourceRank) && sourceRank > 0 ? sourceRank : fallbackRank
 }
 
 async function openMarketJobsBrowser ({ headless = false, browserUrl = '', cdpPort = '' } = {}) {
@@ -556,6 +559,14 @@ function createBaseArtifact ({ captureTime, keywords, cities, requestedLimit, in
     statusSummary: {
       sampleCount: 0,
       jobCount: 0,
+      observationCount: 0,
+      capturedObservationCount: 0,
+      dedupedJobCount: 0,
+      lowConfidenceJobCount: 0,
+      stableIdentityJobCount: 0,
+      missingIdentityJobCount: 0,
+      validJobIdentityAnchorCount: 0,
+      invalidJobIdentityAnchorCount: 0,
       reasonCodes: {},
       contactStates: {},
       identityConfidence: {},
@@ -563,7 +574,7 @@ function createBaseArtifact ({ captureTime, keywords, cities, requestedLimit, in
   }
 }
 
-function normalizeMarketJob (rawJob, { sampleKey, rank }) {
+function normalizeMarketJob (rawJob, { sampleKey, rank, sourceUrl = '' }) {
   const jobId = firstString(rawJob?.jobId, rawJob?.encryptJobId, rawJob?.encryptId)
   const title = firstString(rawJob?.title, rawJob?.jobName, rawJob?.positionName)
   const company = firstString(rawJob?.company, rawJob?.companyName, rawJob?.brandName)
@@ -578,8 +589,16 @@ function normalizeMarketJob (rawJob, { sampleKey, rank }) {
     rank,
   })
   const jobIdentity = jobId
-    ? { status: 'stable', jobId, key: `job:${jobId}`, confidence: 'high' }
-    : { status: 'missing', jobId: '', fingerprint, key: `missing:${fingerprint}`, confidence: 'low' }
+    ? { status: 'stable', jobId, key: `job:${jobId}`, confidence: 'high', validJobIdentityAnchor: true }
+    : {
+        status: 'missing',
+        jobId: '',
+        fingerprint,
+        temporaryFingerprint: fingerprint,
+        key: `missing:${fingerprint}`,
+        confidence: 'low',
+        validJobIdentityAnchor: false,
+      }
   const contactState = normalizeContactState(rawJob?.contactState, rawJob?.listText)
   return {
     jobIdentity,
@@ -615,6 +634,7 @@ function normalizeMarketJob (rawJob, { sampleKey, rank }) {
         listText: firstString(rawJob?.listText),
         source: {
           type: 'boss_geek_search_results',
+          url: sanitizeMarketJobsSourceUrl(firstString(rawJob?.sourceUrl, sourceUrl)),
         },
       },
     ],
@@ -641,6 +661,14 @@ function summarizeMarketArtifact (artifact) {
   const summary = {
     sampleCount: artifact.samples.length,
     jobCount: artifact.jobs.length,
+    observationCount: 0,
+    capturedObservationCount: 0,
+    dedupedJobCount: artifact.jobs.length,
+    lowConfidenceJobCount: 0,
+    stableIdentityJobCount: 0,
+    missingIdentityJobCount: 0,
+    validJobIdentityAnchorCount: 0,
+    invalidJobIdentityAnchorCount: 0,
     ok: 0,
     failed: 0,
     blocked: 0,
@@ -652,13 +680,20 @@ function summarizeMarketArtifact (artifact) {
   for (const sample of artifact.samples) {
     const status = sample.status || 'pending'
     summary[status] = (summary[status] ?? 0) + 1
+    summary.capturedObservationCount += Number.isFinite(Number(sample.capturedCount)) ? Number(sample.capturedCount) : 0
     if (sample.reasonCode) summary.reasonCodes[sample.reasonCode] = (summary.reasonCodes[sample.reasonCode] ?? 0) + 1
   }
   for (const job of artifact.jobs) {
+    summary.observationCount += Array.isArray(job.observations) ? job.observations.length : 0
     const contactState = job.contactState || 'unknown'
     summary.contactStates[contactState] = (summary.contactStates[contactState] ?? 0) + 1
     const confidence = job.jobIdentity?.confidence || 'unknown'
     summary.identityConfidence[confidence] = (summary.identityConfidence[confidence] ?? 0) + 1
+    if (confidence === 'low') summary.lowConfidenceJobCount += 1
+    if (job.jobIdentity?.status === 'stable') summary.stableIdentityJobCount += 1
+    if (job.jobIdentity?.status === 'missing') summary.missingIdentityJobCount += 1
+    if (job.jobIdentity?.validJobIdentityAnchor === true) summary.validJobIdentityAnchorCount += 1
+    if (job.jobIdentity?.validJobIdentityAnchor === false) summary.invalidJobIdentityAnchorCount += 1
   }
   return summary
 }
@@ -753,6 +788,22 @@ function normalizeContactState (value, listText = '') {
   if (/继续沟通|已沟通|沟通中/.test(text)) return 'contacted'
   if (/立即沟通/.test(text)) return 'uncontacted'
   return 'unknown'
+}
+
+function sanitizeMarketJobsSourceUrl (value) {
+  const raw = firstString(value)
+  if (!raw) return ''
+  try {
+    const url = new URL(raw)
+    const sanitized = new URL(`${url.origin}${url.pathname}`)
+    for (const key of ['query', 'city']) {
+      const paramValue = url.searchParams.get(key)
+      if (paramValue) sanitized.searchParams.set(key, paramValue)
+    }
+    return sanitized.toString()
+  } catch {
+    return ''
+  }
 }
 
 function uniqueStrings (items) {
