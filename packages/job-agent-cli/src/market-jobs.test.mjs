@@ -100,6 +100,7 @@ test('market-jobs requires --from-browser unless --plan-only is set', async () =
 
 test('market-jobs browser mode writes a one-sample raw artifact from visible search cards', async () => {
   await withTempOutput(async ({ outputPath }) => {
+    const visitedUrls = []
     const page = createMarketJobsPageFake({
       batches: [
         [
@@ -125,6 +126,7 @@ test('market-jobs browser mode writes a one-sample raw artifact from visible sea
           }),
         ],
       ],
+      onGoto: url => visitedUrls.push(url),
     })
 
     const result = await runMarketJobsOnOpenPage(page, {
@@ -144,6 +146,8 @@ test('market-jobs browser mode writes a one-sample raw artifact from visible sea
     assert.equal(result.reasonCode, null)
     assert.equal(result.rawArtifactPath, outputPath)
     assert.equal(Object.hasOwn(result, 'jobs'), false)
+    assert.equal(visitedUrls.length, 1)
+    assert.equal(new URL(visitedUrls[0]).pathname, '/web/geek/jobs')
 
     const artifact = JSON.parse(fs.readFileSync(outputPath, 'utf8'))
     assert.equal(artifact.schemaVersion, 'market-jobs.v1')
@@ -152,6 +156,7 @@ test('market-jobs browser mode writes a one-sample raw artifact from visible sea
     assert.equal(artifact.captureMetadata.authorization.consumesApplicationAuthorizationToken, false)
     assert.equal(artifact.sourceStrategy.list, 'boss_geek_search_results')
     assert.equal(artifact.sourceStrategy.jd, 'not_requested')
+    assert.equal(artifact.sourceStrategy.browserActions, 'read_only_list_scroll')
     assert.equal(artifact.samples[0].sampleKey, 'ai-agent__101020100')
     assert.equal(artifact.samples[0].status, 'ok')
     assert.equal(artifact.samples[0].reasonCode, 'LIMIT_REACHED')
@@ -159,9 +164,125 @@ test('market-jobs browser mode writes a one-sample raw artifact from visible sea
     assert.equal(artifact.samples[0].dedupedJobCount, 2)
     assert.equal(artifact.jobs.length, 2)
     assert.equal(artifact.jobs[0].jobIdentity.status, 'stable')
+    assert.deepEqual(artifact.jobs[0].jd, { status: 'skipped', reasonCode: 'JD_NOT_REQUESTED' })
     assert.equal(artifact.jobs[0].observations[0].sampleKey, 'ai-agent__101020100')
     assert.equal(artifact.jobs[0].observations[0].rank, 1)
     assert.equal(artifact.jobs[1].contactState, 'contacted')
+  })
+})
+
+test('market-jobs enriches JD from detail DOM only when --include-jd is requested', async () => {
+  await withTempOutput(async ({ outputPath }) => {
+    const visitedUrls = []
+    const page = createMarketJobsPageFake({
+      batches: [
+        [
+          marketJob({
+            jobId: 'enc-job-1',
+            title: 'AI Agent 后端开发',
+            detailUrl: 'https://www.zhipin.com/job_detail/enc-job-1.html?securityId=secret&ka=search_list',
+          }),
+          marketJob({
+            jobId: 'enc-job-2',
+            title: 'Python 平台工程师',
+            detailUrl: 'https://www.zhipin.com/job_detail/enc-job-2.html',
+          }),
+        ],
+      ],
+      detailTextByJobId: {
+        'enc-job-1': {
+          jdText: '负责 AI Agent 平台后端研发，建设工具调用和评测体系。',
+          pageTitle: 'AI Agent 后端开发招聘',
+          evidenceText: '职位描述',
+        },
+        'enc-job-2': {
+          jdText: '负责 Python 数据平台服务开发。',
+          pageTitle: 'Python 平台工程师招聘',
+          evidenceText: '岗位职责',
+        },
+      },
+      onGoto: url => visitedUrls.push(url),
+    })
+
+    const result = await runMarketJobsOnOpenPage(page, {
+      keywords: ['AI Agent'],
+      cities: [{ cityInput: '上海', cityCode: '101020100' }],
+      limit: 2,
+      includeJd: true,
+      outputPath,
+      navigationSettleMs: 0,
+      scrollSettleMs: 0,
+      detailNavigationSettleMs: 0,
+      now: new Date('2026-07-09T08:00:00.000Z'),
+    })
+
+    assert.equal(result.ok, true)
+    assert.equal(result.jobCount, 2)
+    assert.equal(result.statusSummary.jd.ok, 2)
+    assert.deepEqual(visitedUrls.map(url => new URL(url).pathname), [
+      '/web/geek/jobs',
+      '/job_detail/enc-job-1.html',
+      '/job_detail/enc-job-2.html',
+    ])
+
+    const artifact = JSON.parse(fs.readFileSync(outputPath, 'utf8'))
+    assert.equal(artifact.sourceStrategy.jd, 'boss_job_detail_dom')
+    assert.equal(artifact.sourceStrategy.browserActions, 'read_only_list_scroll_then_sequential_detail_navigation')
+    assert.equal(artifact.jobs[0].jd.status, 'ok')
+    assert.equal(artifact.jobs[0].jd.source, 'boss_job_detail_dom')
+    assert.equal(artifact.jobs[0].jd.text, '负责 AI Agent 平台后端研发，建设工具调用和评测体系。')
+    assert.equal(artifact.jobs[0].jd.characterCount, Array.from('负责 AI Agent 平台后端研发，建设工具调用和评测体系。').length)
+    assert.equal(artifact.jobs[0].jd.resolvedUrl.includes('securityId=%5BREDACTED%5D'), true)
+    assert.equal(artifact.jobs[0].jd.resolvedUrl.includes('secret'), false)
+    assert.equal(artifact.jobs[0].detailUrlEvidence.url.includes('secret'), false)
+    assert.deepEqual(artifact.jobs.map(job => job.jd.status), ['ok', 'ok'])
+  })
+})
+
+test('market-jobs stops with a partial artifact when JD enrichment is blocked', async () => {
+  await withTempOutput(async ({ outputPath }) => {
+    const page = createMarketJobsPageFake({
+      batches: [
+        [
+          marketJob({ jobId: 'safe-job', title: 'AI 工程师' }),
+          marketJob({ jobId: 'blocked-job', title: 'LLM 工程师' }),
+        ],
+      ],
+      detailTextByJobId: {
+        'safe-job': { jdText: '正常职位描述' },
+        'blocked-job': {
+          visibleText: '安全验证 拖动滑块后继续',
+          jdText: '',
+        },
+      },
+    })
+
+    const result = await runMarketJobsOnOpenPage(page, {
+      keywords: ['AI'],
+      cities: [{ cityInput: '上海', cityCode: '101020100' }],
+      limit: 2,
+      includeJd: true,
+      outputPath,
+      navigationSettleMs: 0,
+      scrollSettleMs: 0,
+      detailNavigationSettleMs: 0,
+      now: new Date('2026-07-09T08:00:00.000Z'),
+    })
+
+    assert.equal(result.ok, false)
+    assert.equal(result.reasonCode, 'BOSS_SAFETY_VERIFICATION_REQUIRED')
+    assert.equal(result.jobCount, 2)
+    assert.equal(result.statusSummary.partial, 1)
+    assert.equal(result.statusSummary.jd.ok, 1)
+    assert.equal(result.statusSummary.jd.blocked, 1)
+
+    const artifact = JSON.parse(fs.readFileSync(outputPath, 'utf8'))
+    assert.equal(artifact.ok, false)
+    assert.equal(artifact.reasonCode, 'BOSS_SAFETY_VERIFICATION_REQUIRED')
+    assert.equal(artifact.jobs[0].jd.status, 'ok')
+    assert.equal(artifact.jobs[1].jd.status, 'blocked')
+    assert.equal(artifact.jobs[1].jd.reasonCode, 'BOSS_SAFETY_VERIFICATION_REQUIRED')
+    assert.equal(artifact.statusSummary.blockingReasonCode, 'BOSS_SAFETY_VERIFICATION_REQUIRED')
   })
 })
 
@@ -746,6 +867,7 @@ function marketJob ({
   recruiter = { name: '王经理', title: '招聘经理', activeText: '刚刚活跃' },
   companySummary = { industry: '互联网', financingStage: 'B轮', size: '100-499人', tags: ['AI'] },
   sourceUrl = '',
+  detailUrl = '',
   listText = `${title}\n${company}\n${salaryText}\n${contactEvidenceText}`,
 } = {}) {
   const job = {
@@ -765,6 +887,7 @@ function marketJob ({
     listText,
   }
   if (sourceUrl) job.sourceUrl = sourceUrl
+  if (detailUrl) job.detailUrl = detailUrl
   return job
 }
 
@@ -773,10 +896,12 @@ function createMarketJobsPageFake ({
   sampleBatches = null,
   blockedReasonCode = '',
   sampleFailures = [],
+  detailTextByJobId = {},
   onGoto = () => {},
   failOnChatHistoryAccess = false,
 } = {}) {
   let currentUrl = 'about:blank'
+  let currentJobId = ''
   let batchIndex = 0
   let sampleIndex = -1
   return {
@@ -785,8 +910,12 @@ function createMarketJobsPageFake ({
     },
     async goto (url) {
       currentUrl = url
-      batchIndex = 0
-      sampleIndex += 1
+      const detailMatch = String(url).match(/job_detail\/([^/.?]+)\.html/)
+      currentJobId = detailMatch?.[1] ? decodeURIComponent(detailMatch[1]) : ''
+      if (!currentJobId) {
+        batchIndex = 0
+        sampleIndex += 1
+      }
       onGoto(url)
     },
     async waitForFunction () {},
@@ -815,6 +944,16 @@ function createMarketJobsPageFake ({
       if (source.includes('scrollMarketJobsListInPage')) {
         batchIndex += 1
         return { scrolled: true }
+      }
+      if (source.includes('readMarketJobDetailStateInPage')) {
+        const detail = detailTextByJobId[currentJobId] ?? {}
+        return {
+          url: currentUrl,
+          pageTitle: detail.pageTitle ?? '',
+          visibleText: detail.visibleText ?? detail.jdText ?? '',
+          jdText: detail.jdText ?? '',
+          evidenceText: detail.evidenceText ?? '',
+        }
       }
       return null
     },

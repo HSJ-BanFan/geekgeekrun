@@ -17,6 +17,7 @@ const commandStoppingReasonCodes = new Set([
   'BOSS_SAFETY_VERIFICATION_REQUIRED',
   'BOSS_ABNORMAL_ENVIRONMENT',
   'BOSS_SEARCH_LIST_UNAVAILABLE',
+  'BOSS_JOB_DETAIL_UNCONFIRMED',
 ])
 
 export async function runMarketJobs ({
@@ -72,9 +73,6 @@ export async function runMarketJobs ({
     resolvedCities.push({ cityInput, cityCode })
   }
 
-  if (!planOnly && includeJd) {
-    return failure('MARKET_JOBS_INCLUDE_JD_NOT_IMPLEMENTED', '--include-jd for market-jobs is implemented in a later slice')
-  }
   if (!planOnly && analyze) {
     return failure('MARKET_JOBS_ANALYSIS_NOT_IMPLEMENTED', '--analyze for browser-backed market-jobs is implemented in a later slice')
   }
@@ -132,6 +130,7 @@ export async function runMarketJobsOnOpenPage (page, {
   analysisOutputPath = '',
   navigationSettleMs = 5000,
   scrollSettleMs = 1500,
+  detailNavigationSettleMs = 1200,
   now = new Date(),
 } = {}) {
   const marketKeywords = normalizeList(keywords)
@@ -142,9 +141,6 @@ export async function runMarketJobsOnOpenPage (page, {
       ...failure(limitResult.reasonCode, limitResult.error),
       maxLimit,
     }
-  }
-  if (includeJd) {
-    return failure('MARKET_JOBS_INCLUDE_JD_NOT_IMPLEMENTED', '--include-jd for market-jobs is implemented in a later slice')
   }
   if (analyze) {
     return failure('MARKET_JOBS_ANALYSIS_NOT_IMPLEMENTED', '--analyze for browser-backed market-jobs is implemented in a later slice')
@@ -168,6 +164,7 @@ export async function runMarketJobsOnOpenPage (page, {
   await writeArtifact(rawArtifactPath, artifact)
 
   const jobByIdentityKey = new Map()
+  const detailUrlByIdentityKey = new Map()
 
   for (const plannedSample of plannedSamples) {
     const sample = {
@@ -219,7 +216,12 @@ export async function runMarketJobsOnOpenPage (page, {
           sampleKey: sample.sampleKey,
           rank,
           sourceUrl: listResult.url,
+          includeJd,
         })
+        const detailUrl = resolveMarketJobRuntimeDetailUrl(rawJob, normalizedJob)
+        if (detailUrl && !detailUrlByIdentityKey.has(normalizedJob.jobIdentity.key)) {
+          detailUrlByIdentityKey.set(normalizedJob.jobIdentity.key, detailUrl)
+        }
         const observationKey = `${sample.sampleKey}|${normalizedJob.jobIdentity.key}`
         if (sampleObservationKeys.has(observationKey)) continue
         sampleObservationKeys.add(observationKey)
@@ -252,6 +254,21 @@ export async function runMarketJobsOnOpenPage (page, {
 
       await scrollMarketJobsList(page, { settleMs: scrollSettleMs })
       sample.scrollCount += 1
+    }
+  }
+
+  if (includeJd) {
+    const jdResult = await enrichMarketJobsWithJd(page, artifact, {
+      detailUrlByIdentityKey,
+      outputPath: rawArtifactPath,
+      settleMs: detailNavigationSettleMs,
+    })
+    if (!jdResult.ok) {
+      return buildCommandSummary({
+        artifact,
+        rawArtifactPath,
+        analysisArtifactPath: null,
+      })
     }
   }
 
@@ -315,6 +332,14 @@ export function readMarketJobsListStateInPage () {
       data?.jobInfo?.jobId,
       el.getAttribute?.('data-jobid'),
       el.querySelector?.('a[href*="/job_detail/"]')?.getAttribute?.('href')?.match?.(/job_detail\/([^/.?]+)\.html/)?.[1]
+    )
+    const detailUrl = firstString(
+      data?.detailUrl,
+      data?.jobUrl,
+      data?.url,
+      data?.jobInfo?.detailUrl,
+      data?.jobInfo?.jobUrl,
+      el.querySelector?.('a[href*="/job_detail/"]')?.getAttribute?.('href')
     )
     const title = firstString(
       data?.jobName,
@@ -385,6 +410,7 @@ export function readMarketJobsListStateInPage () {
           ...toStringArray(data?.brandLabels),
         ]),
       },
+      detailUrl,
       listText: text,
     }
   }
@@ -541,6 +567,90 @@ export function scrollMarketJobsListInPage () {
   return { scrolled: true, method: 'window' }
 }
 
+export async function extractMarketJobDescriptionFromDetailPage (page, detailUrl, { settleMs = 1200 } = {}) {
+  await page.goto(detailUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {})
+  await page.waitForFunction?.(() => document.readyState === 'complete', { timeout: 60000 }).catch(() => {})
+  if (settleMs > 0) await sleep(settleMs)
+
+  const detail = await page.evaluate(readMarketJobDetailStateInPage)
+  const resolvedUrl = sanitizeMarketJobsDetailUrl(detail?.url ?? page.url?.() ?? detailUrl)
+  const riskReason = detectMarketJobDetailRisk(detail)
+  if (riskReason) {
+    return {
+      status: 'blocked',
+      reasonCode: riskReason,
+      source: 'boss_job_detail_dom',
+      resolvedUrl,
+      pageTitle: detail?.pageTitle ?? '',
+      evidenceText: firstString(detail?.evidenceText, riskReason),
+    }
+  }
+
+  const jdText = String(detail?.jdText ?? '').trim()
+  if (!jdText) {
+    return {
+      status: 'failed',
+      reasonCode: 'JD_DOM_EXTRACTION_FAILED',
+      source: 'boss_job_detail_dom',
+      resolvedUrl,
+      pageTitle: detail?.pageTitle ?? '',
+      evidenceText: firstString(detail?.evidenceText),
+    }
+  }
+
+  return {
+    status: 'ok',
+    source: 'boss_job_detail_dom',
+    text: jdText,
+    characterCount: Array.from(jdText).length,
+    resolvedUrl,
+    pageTitle: detail?.pageTitle ?? '',
+    evidenceText: firstString(detail?.evidenceText),
+  }
+}
+
+// Runs inside the BOSS detail page via page.evaluate. Keep it self-contained.
+export function readMarketJobDetailStateInPage () {
+  const bodyText = document.body?.innerText ?? ''
+  const url = location.href
+  const pageTitle = document.title ?? ''
+  const visibleText = bodyText.slice(0, 1200)
+  const selectors = [
+    '.job-detail-section .job-sec-text',
+    '.job-sec .job-sec-text',
+    '.job-detail-box .job-sec-text',
+    '[class*="job-sec-text"]',
+  ]
+  let jdText = ''
+  let evidenceText = ''
+  for (const selector of selectors) {
+    const el = document.querySelector(selector)
+    const text = el?.innerText?.trim?.()
+    if (text) {
+      jdText = text
+      evidenceText = selector
+      break
+    }
+  }
+  if (!jdText) {
+    const headings = [...document.querySelectorAll('h1,h2,h3,h4,.job-sec-title,.title,[class*="title"]')]
+    const heading = headings.find(el => /职位描述|岗位职责|工作职责|职位详情/.test(el.textContent ?? ''))
+    const section = heading?.closest?.('.job-detail-section,.job-sec,section,div')
+    jdText = section?.querySelector?.('.job-sec-text,[class*="text"],p')?.innerText?.trim?.() ??
+      section?.innerText?.replace(/职位描述|岗位职责|工作职责|职位详情/, '').trim?.() ??
+      ''
+    evidenceText = heading?.textContent?.trim?.() ?? ''
+  }
+  return {
+    url,
+    pageTitle,
+    visibleText,
+    jdText,
+    evidenceText,
+    detailPageConfirmed: /\/job_detail\/[^/]+\.html/i.test(url),
+  }
+}
+
 function createBaseArtifact ({ captureTime, keywords, cities, requestedLimit, includeJd }) {
   return {
     schemaVersion: artifactSchemaVersion,
@@ -565,7 +675,7 @@ function createBaseArtifact ({ captureTime, keywords, cities, requestedLimit, in
     sourceStrategy: {
       list: 'boss_geek_search_results',
       jd: includeJd ? 'boss_job_detail_dom' : 'not_requested',
-      browserActions: 'read_only_list_scroll',
+      browserActions: includeJd ? 'read_only_list_scroll_then_sequential_detail_navigation' : 'read_only_list_scroll',
     },
     samples: [],
     jobs: [],
@@ -590,7 +700,7 @@ function createBaseArtifact ({ captureTime, keywords, cities, requestedLimit, in
   }
 }
 
-function normalizeMarketJob (rawJob, { sampleKey, rank, sourceUrl = '' }) {
+function normalizeMarketJob (rawJob, { sampleKey, rank, sourceUrl = '', includeJd = false }) {
   const jobId = firstString(rawJob?.jobId, rawJob?.encryptJobId, rawJob?.encryptId)
   const title = firstString(rawJob?.title, rawJob?.jobName, rawJob?.positionName)
   const company = firstString(rawJob?.company, rawJob?.companyName, rawJob?.brandName)
@@ -649,6 +759,10 @@ function normalizeMarketJob (rawJob, { sampleKey, rank, sourceUrl = '' }) {
       size: firstString(rawJob?.companySummary?.size),
       tags: uniqueStrings(rawJob?.companySummary?.tags ?? []),
     },
+    detailUrlEvidence: buildMarketJobDetailUrlEvidence(rawJob, jobId),
+    jd: includeJd
+      ? { status: 'pending' }
+      : { status: 'skipped', reasonCode: 'JD_NOT_REQUESTED' },
     observations: [
       {
         sampleKey,
@@ -672,6 +786,9 @@ function upsertMarketJob (artifact, jobByIdentityKey, normalizedJob) {
     ? jobByIdentityKey.get(normalizedJob.jobIdentity.key)
     : artifact.jobs.findIndex(job => job.jobIdentity?.key === normalizedJob.jobIdentity.key)
   if (existingIndex >= 0) {
+    if (!artifact.jobs[existingIndex].detailUrlEvidence?.url && normalizedJob.detailUrlEvidence?.url) {
+      artifact.jobs[existingIndex].detailUrlEvidence = normalizedJob.detailUrlEvidence
+    }
     artifact.jobs[existingIndex].observations.push(...normalizedJob.observations)
     return
   }
@@ -705,6 +822,13 @@ function summarizeMarketArtifact (artifact) {
     reasonCodes: {},
     contactStates: {},
     identityConfidence: {},
+    jd: {
+      ok: 0,
+      failed: 0,
+      blocked: 0,
+      skipped: 0,
+      pending: 0,
+    },
   }
   for (const sample of artifact.samples) {
     const status = sample.status || 'pending'
@@ -728,7 +852,16 @@ function summarizeMarketArtifact (artifact) {
     if (job.jobIdentity?.status === 'missing') summary.missingIdentityJobCount += 1
     if (job.jobIdentity?.validJobIdentityAnchor === true) summary.validJobIdentityAnchorCount += 1
     if (job.jobIdentity?.validJobIdentityAnchor === false) summary.invalidJobIdentityAnchorCount += 1
+    const jdStatus = job.jd?.status || 'pending'
+    summary.jd[jdStatus] = (summary.jd[jdStatus] ?? 0) + 1
+    if (job.jd?.reasonCode) summary.reasonCodes[job.jd.reasonCode] = (summary.reasonCodes[job.jd.reasonCode] ?? 0) + 1
+    if (jdStatus === 'blocked') {
+      summary.stopped += 1
+      summary.partial += 1
+      if (!summary.blockingReasonCode && job.jd?.reasonCode) summary.blockingReasonCode = job.jd.reasonCode
+    }
   }
+  if (artifact.reasonCode && !summary.blockingReasonCode) summary.blockingReasonCode = artifact.reasonCode
   return summary
 }
 
@@ -804,6 +937,87 @@ function isCommandStoppingReason (reasonCode) {
   return commandStoppingReasonCodes.has(reasonCode)
 }
 
+async function enrichMarketJobsWithJd (page, artifact, { detailUrlByIdentityKey, outputPath, settleMs }) {
+  for (const job of artifact.jobs) {
+    const detailUrl = detailUrlByIdentityKey.get(job.jobIdentity?.key) || buildMarketJobDetailUrlFromJob(job)
+    if (!detailUrl) {
+      job.jd = {
+        status: 'failed',
+        reasonCode: 'MISSING_JOB_DETAIL_URL',
+      }
+      artifact.statusSummary = summarizeMarketArtifact(artifact)
+      await writeArtifact(outputPath, artifact)
+      continue
+    }
+
+    const jd = await extractMarketJobDescriptionFromDetailPage(page, detailUrl, { settleMs })
+    job.jd = jd
+    if (!job.detailUrlEvidence?.url && jd.resolvedUrl) {
+      job.detailUrlEvidence = {
+        url: jd.resolvedUrl,
+        source: 'derived_from_job_identity',
+      }
+    }
+
+    if (jd.status === 'blocked') {
+      artifact.ok = false
+      artifact.reasonCode = jd.reasonCode
+      artifact.statusSummary = summarizeMarketArtifact(artifact)
+      await writeArtifact(outputPath, artifact)
+      return { ok: false, reasonCode: jd.reasonCode }
+    }
+
+    artifact.statusSummary = summarizeMarketArtifact(artifact)
+    await writeArtifact(outputPath, artifact)
+  }
+
+  return { ok: true }
+}
+
+function resolveMarketJobRuntimeDetailUrl (rawJob, normalizedJob) {
+  const rawDetailUrl = firstString(rawJob?.detailUrl, rawJob?.jobUrl, rawJob?.url)
+  if (rawDetailUrl) return absolutizeBossUrl(rawDetailUrl)
+  return buildMarketJobDetailUrlFromJob(normalizedJob)
+}
+
+function buildMarketJobDetailUrlFromJob (job) {
+  const jobId = firstString(job?.jobId, job?.jobIdentity?.jobId)
+  if (!jobId) return ''
+  return `https://www.zhipin.com/job_detail/${encodeURIComponent(jobId)}.html`
+}
+
+function buildMarketJobDetailUrlEvidence (rawJob, jobId) {
+  const rawDetailUrl = firstString(rawJob?.detailUrl, rawJob?.jobUrl, rawJob?.url)
+  const url = rawDetailUrl
+    ? sanitizeMarketJobsDetailUrl(absolutizeBossUrl(rawDetailUrl))
+    : jobId
+      ? sanitizeMarketJobsDetailUrl(buildMarketJobDetailUrlFromJob({ jobId }))
+      : ''
+  return {
+    url,
+    source: rawDetailUrl ? 'visible_job_card_link' : jobId ? 'derived_from_job_identity' : 'missing',
+  }
+}
+
+function absolutizeBossUrl (value) {
+  const raw = firstString(value)
+  if (!raw) return ''
+  try {
+    return new URL(raw, 'https://www.zhipin.com').toString()
+  } catch {
+    return ''
+  }
+}
+
+function detectMarketJobDetailRisk (detail) {
+  const haystack = `${detail?.url ?? ''}\n${detail?.visibleText ?? ''}`
+  if (/登录\/注册|请登录|扫码登录|验证码登录|登录后继续/.test(haystack)) return 'BOSS_LOGIN_REQUIRED'
+  if (/安全验证|验证后继续|拖动滑块|verify|security-check/i.test(haystack)) return 'BOSS_SAFETY_VERIFICATION_REQUIRED'
+  if (/环境异常|abnormal/i.test(haystack)) return 'BOSS_ABNORMAL_ENVIRONMENT'
+  if (detail?.detailPageConfirmed === false) return 'BOSS_JOB_DETAIL_UNCONFIRMED'
+  return ''
+}
+
 function buildMissingJobFingerprint ({ title, company, salaryText, city, sampleKey, rank }) {
   return [title, company, salaryText, city, sampleKey, rank]
     .map(item => String(item ?? '').trim())
@@ -868,6 +1082,19 @@ function sanitizeMarketJobsSourceUrl (value) {
     return sanitized.toString()
   } catch {
     return ''
+  }
+}
+
+function sanitizeMarketJobsDetailUrl (value) {
+  const raw = firstString(value)
+  if (!raw) return ''
+  try {
+    const url = new URL(raw, 'https://www.zhipin.com')
+    const sanitized = new URL(`${url.origin}${url.pathname}`)
+    if (url.searchParams.has('securityId')) sanitized.searchParams.set('securityId', '[REDACTED]')
+    return sanitized.toString()
+  } catch {
+    return raw.replace(/([?&]securityId=)[^&#]+/i, '$1[REDACTED]')
   }
 }
 
