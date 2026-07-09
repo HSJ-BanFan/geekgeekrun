@@ -5,6 +5,7 @@ import path from 'node:path'
 import { test } from 'node:test'
 
 import {
+  analyzeMarketJobs,
   readMarketJobsListStateInPage,
   runMarketJobs,
   runMarketJobsOnOpenPage,
@@ -812,16 +813,211 @@ test('market-jobs browser mode crawls Cartesian samples and globally dedupes sta
   })
 })
 
-test('market-jobs browser mode rejects analysis until the analysis slice exists', async () => {
-  const result = await runMarketJobs({
-    fromBrowser: true,
-    keywords: ['AI'],
-    cities: ['北京'],
-    analyze: true,
+test('market-jobs --analyze writes a deterministic analysis artifact and reports its path', async () => {
+  await withTempOutput(async ({ outputPath }) => {
+    const page = createMarketJobsPageFake({
+      batches: [
+        [
+          marketJob({
+            jobId: 'target-job',
+            title: 'AI Agent 后端开发',
+            company: 'Target Co',
+            city: '上海',
+            salaryText: '25-35K',
+            experience: '3-5年',
+            degree: '本科',
+            tags: ['LLM', 'Python'],
+            contactState: 'uncontacted',
+            companySummary: { industry: '人工智能', financingStage: 'B轮', size: '100-499人', tags: [] },
+          }),
+          marketJob({
+            jobId: '',
+            title: '数据标注兼职',
+            company: 'Noise Co',
+            city: '远程',
+            salaryText: '200元/天',
+            experience: '经验不限',
+            degree: '学历不限',
+            positionCategory: '数据标注',
+            tags: [],
+            contactState: 'uncontacted',
+            companySummary: { industry: '外包服务', financingStage: '未融资', size: '0-20人', tags: [] },
+          }),
+          marketJob({
+            jobId: 'contacted-job',
+            title: 'Java 后端开发',
+            company: 'Contacted Co',
+            city: '上海',
+            salaryText: '18-25K',
+            tags: [],
+            contactState: 'contacted',
+            contactEvidenceText: '继续沟通',
+          }),
+        ],
+      ],
+    })
+
+    const result = await runMarketJobsOnOpenPage(page, {
+      keywords: ['AI Agent'],
+      cities: [{ cityInput: '上海', cityCode: '101020100' }],
+      limit: 3,
+      analyze: true,
+      outputPath,
+      navigationSettleMs: 0,
+      scrollSettleMs: 0,
+      now: new Date('2026-07-09T08:00:00.000Z'),
+    })
+
+    assert.equal(result.ok, true)
+    assert.equal(result.analysisArtifactPath, outputPath.replace(/\.json$/, '.analysis.json'))
+    assert.equal(fs.existsSync(result.analysisArtifactPath), true)
+
+    const analysis = JSON.parse(fs.readFileSync(result.analysisArtifactPath, 'utf8'))
+    assert.equal(analysis.schemaVersion, 'market-jobs-analysis.v1')
+    assert.equal(analysis.source.schemaVersion, 'market-jobs.v1')
+    assert.equal(analysis.jobSetSummary.totalJobCount, 3)
+    assert.equal(analysis.jobSetSummary.marketSupplyJobCount, 2)
+    assert.equal(analysis.jobSetSummary.actionableJobCount, 1)
+    assert.equal(analysis.categoryCounts.ai_llm_agent_aigc, 1)
+    assert.equal(analysis.categoryCounts.data_annotation_ai_training, 1)
+    assert.equal(analysis.categoryCounts.java_traditional_backend, 0)
+    assert.equal(analysis.salaryBuckets.monthly_high.count, 1)
+    assert.equal(analysis.salaryBuckets.daily_rate.count, 1)
+    assert.equal(analysis.salaryBuckets.monthly_high.examples[0].salaryText, '25-35K')
+    assert.equal(analysis.experienceBuckets.three_to_five_years, 1)
+    assert.equal(analysis.experienceBuckets.no_experience_required, 1)
+    assert.equal(analysis.degreeBuckets.bachelor, 1)
+    assert.equal(analysis.degreeBuckets.no_degree_requirement, 1)
+    assert.deepEqual(analysis.contactStateBreakdown, { uncontacted: 2, contacted: 1 })
+    assert.deepEqual(analysis.identityConfidenceBreakdown, { high: 1, low: 1 })
+    assert.equal(analysis.sampleBreakdown[0].marketSupplyJobCount, 2)
+    assert.equal(analysis.sampleBreakdown[0].actionableJobCount, 1)
+    assert.equal(analysis.coreTargetExamples[0].jobId, 'target-job')
+    assert.equal(analysis.likelyNoiseExamples[0].title, '数据标注兼职')
+  })
+})
+
+test('market-jobs analysis covers deterministic market buckets, examples, and sample breakdown', () => {
+  const analysis = analyzeMarketJobs({
+    schemaVersion: 'market-jobs.v1',
+    samples: [
+      {
+        sampleKey: 'ai__101020100',
+        keyword: 'AI',
+        cityInput: '上海',
+        cityCode: '101020100',
+        requestedLimit: 10,
+        capturedCount: 3,
+        dedupedJobCount: 3,
+        status: 'ok',
+        reasonCode: 'LIMIT_REACHED',
+      },
+      {
+        sampleKey: 'front__101010100',
+        keyword: '前端',
+        cityInput: '北京',
+        cityCode: '101010100',
+        requestedLimit: 10,
+        capturedCount: 1,
+        dedupedJobCount: 1,
+        status: 'ok',
+        reasonCode: 'NO_NEW_ITEMS',
+      },
+    ],
+    jobs: [
+      marketAnalysisJob({
+        jobId: 'ai-1',
+        title: 'AI Agent 全栈工程师',
+        city: '上海',
+        salaryText: '20-30K',
+        experience: '1-3年',
+        degree: '本科',
+        positionCategory: '全栈开发',
+        tags: ['LLM'],
+        contactState: 'uncontacted',
+        industry: '人工智能',
+        size: '100-499人',
+        financingStage: 'B轮',
+        sampleKeys: ['ai__101020100'],
+      }),
+      marketAnalysisJob({
+        jobId: '',
+        title: '日语数据标注兼职',
+        city: '远程',
+        salaryText: '300元/天',
+        experience: '',
+        degree: '',
+        positionCategory: '数据标注',
+        tags: ['兼职'],
+        contactState: 'uncontacted',
+        confidence: 'low',
+        identityStatus: 'missing',
+        industry: '外包服务',
+        size: '0-20人',
+        financingStage: '未融资',
+        sampleKeys: ['ai__101020100'],
+      }),
+      marketAnalysisJob({
+        jobId: 'mixed-1',
+        title: 'AI 测试实习生',
+        city: '上海',
+        salaryText: '薪资面议',
+        experience: '在校/应届',
+        degree: '大专',
+        positionCategory: '测试',
+        tags: [],
+        contactState: 'uncontacted',
+        sampleKeys: ['ai__101020100'],
+      }),
+      marketAnalysisJob({
+        jobId: 'contacted-front',
+        title: 'React 前端工程师',
+        city: '北京',
+        salaryText: '15-20K',
+        experience: '3-5年',
+        degree: '硕士',
+        positionCategory: '前端开发',
+        tags: ['Vue'],
+        contactState: 'contacted',
+        sampleKeys: ['front__101010100'],
+      }),
+    ],
   })
 
-  assert.equal(result.ok, false)
-  assert.equal(result.reasonCode, 'MARKET_JOBS_ANALYSIS_NOT_IMPLEMENTED')
+  assert.equal(analysis.jobSetSummary.totalJobCount, 4)
+  assert.equal(analysis.jobSetSummary.marketSupplyJobCount, 3)
+  assert.equal(analysis.jobSetSummary.actionableJobCount, 2)
+  assert.equal(analysis.categoryCounts.ai_llm_agent_aigc, 2)
+  assert.equal(analysis.categoryCounts.full_stack, 1)
+  assert.equal(analysis.categoryCounts.frontend_react_vue, 0)
+  assert.equal(analysis.categoryCounts.data_annotation_ai_training, 1)
+  assert.equal(analysis.categoryCounts.translation_localization_japanese, 1)
+  assert.equal(analysis.categoryCounts.testing_it_generic, 1)
+  assert.equal(analysis.categoryCounts.remote_part_time, 1)
+  assert.equal(analysis.categoryCounts.internship_new_grad, 1)
+  assert.equal(analysis.salaryBuckets.monthly_mid.count, 1)
+  assert.equal(analysis.salaryBuckets.daily_rate.count, 1)
+  assert.equal(analysis.salaryBuckets.negotiable.count, 1)
+  assert.equal(analysis.salaryBuckets.monthly_mid.examples[0].salaryText, '20-30K')
+  assert.equal(analysis.experienceBuckets.one_to_three_years, 1)
+  assert.equal(analysis.experienceBuckets.unknown, 1)
+  assert.equal(analysis.experienceBuckets.new_grad_or_internship, 1)
+  assert.equal(analysis.degreeBuckets.bachelor, 1)
+  assert.equal(analysis.degreeBuckets.unknown, 1)
+  assert.equal(analysis.degreeBuckets.junior_college, 1)
+  assert.deepEqual(analysis.contactStateBreakdown, { uncontacted: 3, contacted: 1 })
+  assert.deepEqual(analysis.identityConfidenceBreakdown, { high: 2, low: 1 })
+  assert.deepEqual(analysis.topCities, [
+    { value: '上海', count: 2 },
+    { value: '远程', count: 1 },
+  ])
+  assert.equal(analysis.sampleBreakdown[0].sampleKey, 'ai__101020100')
+  assert.equal(analysis.sampleBreakdown[0].marketSupplyJobCount, 3)
+  assert.equal(analysis.sampleBreakdown[0].actionableJobCount, 2)
+  assert.equal(analysis.sampleBreakdown[1].marketSupplyJobCount, 0)
+  assert.equal(analysis.coreTargetExamples[0].title, 'AI Agent 全栈工程师')
+  assert.equal(analysis.likelyNoiseExamples[0].title, '日语数据标注兼职')
+  assert.equal(analysis.mixedTargetNoiseExamples[0].title, 'AI 测试实习生')
 })
 
 test('market-jobs rejects limits above the per-sample maximum with a stable reason code', async () => {
@@ -889,6 +1085,54 @@ function marketJob ({
   if (sourceUrl) job.sourceUrl = sourceUrl
   if (detailUrl) job.detailUrl = detailUrl
   return job
+}
+
+function marketAnalysisJob ({
+  jobId = 'job-1',
+  title = 'AI 工程师',
+  company = 'Example Co',
+  city = '北京',
+  salaryText = '20-30K',
+  experience = '1-3年',
+  degree = '本科',
+  positionCategory = '后端开发',
+  tags = [],
+  contactState = 'uncontacted',
+  confidence = 'high',
+  identityStatus = 'stable',
+  industry = '',
+  size = '',
+  financingStage = '',
+  sampleKeys = ['sample__101010100'],
+} = {}) {
+  return {
+    jobId,
+    title,
+    company,
+    city,
+    salaryText,
+    experience,
+    degree,
+    positionCategory,
+    tags,
+    contactState,
+    jobIdentity: {
+      status: identityStatus,
+      jobId,
+      confidence,
+      validJobIdentityAnchor: identityStatus === 'stable',
+    },
+    companySummary: {
+      industry,
+      size,
+      financingStage,
+    },
+    observations: sampleKeys.map((sampleKey, index) => ({
+      sampleKey,
+      rank: index + 1,
+      contactState,
+    })),
+  }
 }
 
 function createMarketJobsPageFake ({

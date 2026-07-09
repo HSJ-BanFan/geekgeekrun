@@ -1180,7 +1180,7 @@ function usage () {
       'ggr authorization-token consume --token-id token-id [--token-file file] [--action start_chat]',
       'ggr authorized-action --action start_chat --token-id token-id [--token-file file] [--audit-file file] [--confirm]',
       'ggr recent-applications --from-browser [--limit 100] [--include-jd] [--analyze] [--output file] [--analysis-output file] [--browser-url url|--cdp-port port]',
-      'ggr market-jobs --from-browser --keyword value --city name-or-code [--limit 200] [--output file] [--browser-url url|--cdp-port port]',
+      'ggr market-jobs --from-browser --keyword value --city name-or-code [--limit 200] [--include-jd] [--analyze] [--output file] [--analysis-output file] [--browser-url url|--cdp-port port]',
       'ggr market-jobs --plan-only --keyword value --city name-or-code [--limit 200] [--analyze] [--output file] [--analysis-output file]',
       'ggr run-once --job job.json [--llm] [--confirm]',
       'ggr run-once --from-browser [--recall-keyword value] [--city code] [--llm] [--confirm]',

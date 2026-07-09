@@ -7,6 +7,7 @@ import { resolveCityCode } from './city-codes.mjs'
 
 const commandName = 'market-jobs'
 const artifactSchemaVersion = 'market-jobs.v1'
+const analysisSchemaVersion = 'market-jobs-analysis.v1'
 const searchPageUrl = 'https://www.zhipin.com/web/geek/jobs'
 const defaultLimit = 200
 const maxLimit = 500
@@ -71,10 +72,6 @@ export async function runMarketJobs ({
       return failure('MARKET_CITY_NOT_RESOLVED', `could not resolve BOSS city code for --city ${cityInput}`)
     }
     resolvedCities.push({ cityInput, cityCode })
-  }
-
-  if (!planOnly && analyze) {
-    return failure('MARKET_JOBS_ANALYSIS_NOT_IMPLEMENTED', '--analyze for browser-backed market-jobs is implemented in a later slice')
   }
 
   const captureTime = toIso(now)
@@ -142,10 +139,6 @@ export async function runMarketJobsOnOpenPage (page, {
       maxLimit,
     }
   }
-  if (analyze) {
-    return failure('MARKET_JOBS_ANALYSIS_NOT_IMPLEMENTED', '--analyze for browser-backed market-jobs is implemented in a later slice')
-  }
-
   const plannedSamples = buildPlannedSamples({
     keywords: marketKeywords,
     cities: resolvedCities,
@@ -201,10 +194,11 @@ export async function runMarketJobsOnOpenPage (page, {
         artifact.reasonCode = listResult.reasonCode
         artifact.statusSummary = summarizeMarketArtifact(artifact)
         await writeArtifact(rawArtifactPath, artifact)
-        return buildCommandSummary({
+        return await writeAnalysisAndBuildCommandSummary({
           artifact,
           rawArtifactPath,
-          analysisArtifactPath: null,
+          analysisOutputPath,
+          analyze,
         })
       }
 
@@ -264,10 +258,11 @@ export async function runMarketJobsOnOpenPage (page, {
       settleMs: detailNavigationSettleMs,
     })
     if (!jdResult.ok) {
-      return buildCommandSummary({
+      return await writeAnalysisAndBuildCommandSummary({
         artifact,
         rawArtifactPath,
-        analysisArtifactPath: null,
+        analysisOutputPath,
+        analyze,
       })
     }
   }
@@ -277,10 +272,11 @@ export async function runMarketJobsOnOpenPage (page, {
   artifact.statusSummary = summarizeMarketArtifact(artifact)
   await writeArtifact(rawArtifactPath, artifact)
 
-  return buildCommandSummary({
+  return await writeAnalysisAndBuildCommandSummary({
     artifact,
     rawArtifactPath,
-    analysisArtifactPath: null,
+    analysisOutputPath,
+    analyze,
   })
 }
 
@@ -865,6 +861,103 @@ function summarizeMarketArtifact (artifact) {
   return summary
 }
 
+export function analyzeMarketJobs (artifact) {
+  const jobs = Array.isArray(artifact?.jobs) ? artifact.jobs : []
+  const samples = Array.isArray(artifact?.samples) ? artifact.samples : []
+  const marketSupplyJobs = jobs.filter(job => normalizeContactStateForAnalysis(job?.contactState) === 'uncontacted')
+  const categoryCounts = Object.fromEntries(categoryDefinitions.map(item => [item.key, 0]))
+  const salaryBuckets = createSalaryBuckets()
+  const experienceBuckets = createExplicitFieldBuckets(experienceBucketKeys)
+  const degreeBuckets = createExplicitFieldBuckets(degreeBucketKeys)
+  const contactStateCounts = new Map()
+  const identityConfidenceCounts = new Map()
+  const cityCounts = new Map()
+  const companyIndustryCounts = new Map()
+  const companySizeCounts = new Map()
+  const financingStageCounts = new Map()
+  const coreTargetExamples = []
+  const mixedTargetNoiseExamples = []
+  const likelyNoiseExamples = []
+
+  for (const job of jobs) {
+    incrementCount(contactStateCounts, normalizeContactStateForAnalysis(job?.contactState))
+  }
+
+  for (const job of marketSupplyJobs) {
+    const matchedCategories = matchMarketJobCategories(job)
+    for (const category of matchedCategories) categoryCounts[category] += 1
+    const targetMatches = matchedCategories.filter(item => targetCategoryKeys.has(item))
+    const noiseMatches = matchedCategories.filter(item => noiseCategoryKeys.has(item))
+    const example = buildMarketAnalysisExample(job, matchedCategories)
+    if (targetMatches.length && !noiseMatches.length && coreTargetExamples.length < 10) {
+      coreTargetExamples.push(example)
+    } else if (targetMatches.length && noiseMatches.length && mixedTargetNoiseExamples.length < 10) {
+      mixedTargetNoiseExamples.push(example)
+    } else if (!targetMatches.length && noiseMatches.length && likelyNoiseExamples.length < 10) {
+      likelyNoiseExamples.push(example)
+    }
+
+    addSalaryBucketExample(salaryBuckets, classifySalaryBucket(job?.salaryText), job)
+    experienceBuckets[classifyExperienceBucket(job?.experience)] += 1
+    degreeBuckets[classifyDegreeBucket(job?.degree)] += 1
+    incrementCount(identityConfidenceCounts, job?.jobIdentity?.confidence || 'unknown')
+    incrementCount(cityCounts, job?.city)
+    incrementCount(companyIndustryCounts, job?.companySummary?.industry)
+    incrementCount(companySizeCounts, job?.companySummary?.size)
+    incrementCount(financingStageCounts, job?.companySummary?.financingStage)
+  }
+
+  return {
+    schemaVersion: analysisSchemaVersion,
+    source: {
+      schemaVersion: artifact?.schemaVersion ?? '',
+      command: artifact?.command ?? commandName,
+      capturedAt: artifact?.captureMetadata?.capturedAt ?? '',
+    },
+    countScope: {
+      marketSupplyFilter: { contactState: 'uncontacted' },
+      marketSupplyIncludesLowIdentityConfidence: true,
+      contactStateBreakdownScope: 'all_jobs',
+      identityConfidenceBreakdownScope: 'market_supply_jobs',
+      deterministic: true,
+      llmUsed: false,
+    },
+    jobSetSummary: {
+      totalJobCount: jobs.length,
+      marketSupplyJobCount: marketSupplyJobs.length,
+      excludedFromMarketSupplyCount: jobs.length - marketSupplyJobs.length,
+      actionableJobCount: marketSupplyJobs.filter(hasStableMarketJobIdentity).length,
+      lowIdentityConfidenceMarketSupplyJobCount: marketSupplyJobs.filter(job => job?.jobIdentity?.confidence === 'low').length,
+    },
+    categoryCounts,
+    salaryBuckets,
+    experienceBuckets,
+    degreeBuckets,
+    topCities: topCounts(cityCounts),
+    topCompanyIndustries: topCounts(companyIndustryCounts),
+    topCompanySizes: topCounts(companySizeCounts),
+    topFinancingStages: topCounts(financingStageCounts),
+    contactStateBreakdown: countsObject(contactStateCounts),
+    identityConfidenceBreakdown: countsObject(identityConfidenceCounts),
+    sampleBreakdown: samples.map(sample => buildSampleAnalysisBreakdown(sample, jobs, marketSupplyJobs)),
+    coreTargetExamples,
+    mixedTargetNoiseExamples,
+    likelyNoiseExamples,
+  }
+}
+
+async function writeAnalysisAndBuildCommandSummary ({ artifact, rawArtifactPath, analysisOutputPath, analyze }) {
+  const analysisArtifactPath = analyze ? resolveAnalysisOutputPath(analysisOutputPath, rawArtifactPath) : null
+  if (analysisArtifactPath) {
+    await writeArtifact(analysisArtifactPath, analyzeMarketJobs(artifact))
+  }
+  return buildCommandSummary({
+    artifact,
+    rawArtifactPath,
+    analysisArtifactPath,
+  })
+}
+
 function buildCommandSummary ({ artifact, rawArtifactPath, analysisArtifactPath }) {
   return {
     ok: Boolean(artifact.ok),
@@ -876,6 +969,141 @@ function buildCommandSummary ({ artifact, rawArtifactPath, analysisArtifactPath 
     analysisArtifactPath,
     reasonCode: artifact.reasonCode,
   }
+}
+
+function buildSampleAnalysisBreakdown (sample, jobs, marketSupplyJobs) {
+  const sampleKey = sample?.sampleKey ?? ''
+  const observedJobs = jobs.filter(job => isMarketJobObservedInSample(job, sampleKey))
+  const marketSupplyObservedJobs = marketSupplyJobs.filter(job => isMarketJobObservedInSample(job, sampleKey))
+  return {
+    sampleKey,
+    keyword: sample?.keyword ?? '',
+    cityInput: sample?.cityInput ?? '',
+    cityCode: sample?.cityCode ?? '',
+    status: sample?.status ?? '',
+    reasonCode: sample?.reasonCode ?? null,
+    requestedLimit: sample?.requestedLimit ?? 0,
+    capturedCount: sample?.capturedCount ?? 0,
+    dedupedJobCount: sample?.dedupedJobCount ?? 0,
+    observedJobCount: observedJobs.length,
+    marketSupplyJobCount: marketSupplyObservedJobs.length,
+    actionableJobCount: marketSupplyObservedJobs.filter(hasStableMarketJobIdentity).length,
+  }
+}
+
+function isMarketJobObservedInSample (job, sampleKey) {
+  return Array.isArray(job?.observations) && job.observations.some(observation => observation?.sampleKey === sampleKey)
+}
+
+function hasStableMarketJobIdentity (job) {
+  return job?.jobIdentity?.status === 'stable' && job?.jobIdentity?.validJobIdentityAnchor !== false
+}
+
+function matchMarketJobCategories (job) {
+  const haystack = [
+    job?.title,
+    job?.positionCategory,
+    ...(Array.isArray(job?.tags) ? job.tags : []),
+  ].map(item => String(item ?? '')).join('\n').toLowerCase()
+  const matched = []
+  for (const category of categoryDefinitions) {
+    if (category.pattern.test(haystack)) matched.push(category.key)
+  }
+  return matched
+}
+
+function buildMarketAnalysisExample (job, matchedCategories) {
+  return {
+    jobId: job?.jobIdentity?.jobId || job?.jobId || '',
+    title: job?.title ?? '',
+    company: job?.company ?? '',
+    city: job?.city ?? '',
+    salaryText: job?.salaryText ?? '',
+    experience: job?.experience ?? '',
+    degree: job?.degree ?? '',
+    contactState: normalizeContactStateForAnalysis(job?.contactState),
+    identityConfidence: job?.jobIdentity?.confidence ?? 'unknown',
+    matchedCategories,
+    sampleKeys: uniqueStrings((job?.observations ?? []).map(observation => observation?.sampleKey)),
+  }
+}
+
+function createSalaryBuckets () {
+  return Object.fromEntries(salaryBucketKeys.map(key => [key, { count: 0, examples: [] }]))
+}
+
+function createExplicitFieldBuckets (keys) {
+  return Object.fromEntries(keys.map(key => [key, 0]))
+}
+
+function addSalaryBucketExample (salaryBuckets, bucket, job) {
+  salaryBuckets[bucket].count += 1
+  if (salaryBuckets[bucket].examples.length >= 5) return
+  salaryBuckets[bucket].examples.push({
+    salaryText: firstString(job?.salaryText),
+    title: firstString(job?.title),
+    company: firstString(job?.company),
+  })
+}
+
+function classifySalaryBucket (value) {
+  const text = firstString(value)
+  if (!text) return 'unknown'
+  if (/面议|薪资待定|negotiable/i.test(text)) return 'negotiable'
+  if (/元\s*\/\s*天|\/\s*天|每天|日薪|\bday\b/i.test(text)) return 'daily_rate'
+  const monthlyK = text.match(/(\d+(?:\.\d+)?)\s*[kK](?:\s*[-~至]\s*(\d+(?:\.\d+)?)\s*[kK])?/)
+  if (!monthlyK) return 'unknown'
+  const low = Number.parseFloat(monthlyK[1])
+  const high = Number.parseFloat(monthlyK[2] ?? monthlyK[1])
+  const upper = Number.isFinite(high) ? high : low
+  if (upper > 30) return 'monthly_high'
+  if (upper >= 15) return 'monthly_mid'
+  return 'monthly_low'
+}
+
+function classifyExperienceBucket (value) {
+  const text = firstString(value)
+  if (!text) return 'unknown'
+  if (/经验不限|不限/.test(text)) return 'no_experience_required'
+  if (/在校|应届|实习|new grad/i.test(text)) return 'new_grad_or_internship'
+  if (/10年以上|十年以上|10\+/.test(text)) return 'ten_plus_years'
+  if (/5\s*[-~至]\s*10|5年以上|五年以上/.test(text)) return 'five_to_ten_years'
+  if (/3\s*[-~至]\s*5|3年以上|三年以上/.test(text)) return 'three_to_five_years'
+  if (/1\s*[-~至]\s*3|1年以上|一年以上/.test(text)) return 'one_to_three_years'
+  if (/1年以内|一年以内|少于1年/.test(text)) return 'under_one_year'
+  return 'unknown'
+}
+
+function classifyDegreeBucket (value) {
+  const text = firstString(value)
+  if (!text) return 'unknown'
+  if (/学历不限|不限/.test(text)) return 'no_degree_requirement'
+  if (/博士|硕士|研究生/.test(text)) return 'master_plus'
+  if (/本科/.test(text)) return 'bachelor'
+  if (/大专|专科/.test(text)) return 'junior_college'
+  if (/高中|中专|中技|初中/.test(text)) return 'high_school_or_below'
+  return 'unknown'
+}
+
+function normalizeContactStateForAnalysis (value) {
+  const state = firstString(value)
+  return ['uncontacted', 'contacted', 'applied_or_chatting', 'unknown'].includes(state) ? state : 'unknown'
+}
+
+function incrementCount (counts, value) {
+  const key = firstString(value) || 'unknown'
+  counts.set(key, (counts.get(key) ?? 0) + 1)
+}
+
+function topCounts (counts, limit = 20) {
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0]), 'en'))
+    .slice(0, limit)
+    .map(([value, count]) => ({ value, count }))
+}
+
+function countsObject (counts) {
+  return Object.fromEntries([...counts.entries()].sort((a, b) => String(a[0]).localeCompare(String(b[0]), 'en')))
 }
 
 async function writeArtifact (outputPath, artifact) {
@@ -1097,6 +1325,65 @@ function sanitizeMarketJobsDetailUrl (value) {
     return raw.replace(/([?&]securityId=)[^&#]+/i, '$1[REDACTED]')
   }
 }
+
+const categoryDefinitions = [
+  { key: 'ai_llm_agent_aigc', pattern: /\b(ai|llm|agent|aigc|gpt)\b|大模型|智能体|生成式|人工智能/i },
+  { key: 'full_stack', pattern: /全栈|full[-\s]?stack/i },
+  { key: 'python_backend_data_engineering', pattern: /python|fastapi|django|flask|后端|数据工程|数据管道|pipeline/i },
+  { key: 'frontend_react_vue', pattern: /前端|react|vue|typescript|javascript|next\.?js/i },
+  { key: 'java_traditional_backend', pattern: /java|spring|mybatis|传统后端/i },
+  { key: 'data_annotation_ai_training', pattern: /数据标注|ai训练|训练师|语料|标注|数据采集/i },
+  { key: 'translation_localization_japanese', pattern: /翻译|本地化|日语|日本语|英语|localization/i },
+  { key: 'testing_it_generic', pattern: /测试|qa|运维|实施|it支持|技术支持/i },
+  { key: 'product_operations_audit_data_entry', pattern: /产品运营|运营|审核|审核运营|录入|客服|销售|金融|电销/i },
+  { key: 'remote_part_time', pattern: /远程|兼职|part[-\s]?time|外包|项目制/i },
+  { key: 'internship_new_grad', pattern: /实习|实习生|校招|应届|新卒|new grad/i },
+]
+
+const targetCategoryKeys = new Set([
+  'ai_llm_agent_aigc',
+  'full_stack',
+  'python_backend_data_engineering',
+  'frontend_react_vue',
+])
+
+const noiseCategoryKeys = new Set([
+  'data_annotation_ai_training',
+  'translation_localization_japanese',
+  'testing_it_generic',
+  'product_operations_audit_data_entry',
+  'remote_part_time',
+  'internship_new_grad',
+])
+
+const salaryBucketKeys = [
+  'monthly_low',
+  'monthly_mid',
+  'monthly_high',
+  'daily_rate',
+  'negotiable',
+  'unknown',
+]
+
+const experienceBucketKeys = [
+  'no_experience_required',
+  'under_one_year',
+  'one_to_three_years',
+  'three_to_five_years',
+  'five_to_ten_years',
+  'ten_plus_years',
+  'new_grad_or_internship',
+  'unknown',
+]
+
+const degreeBucketKeys = [
+  'no_degree_requirement',
+  'high_school_or_below',
+  'junior_college',
+  'bachelor',
+  'master_plus',
+  'unknown',
+]
 
 function uniqueStrings (items) {
   const seen = new Set()
