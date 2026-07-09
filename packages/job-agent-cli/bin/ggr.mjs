@@ -4,13 +4,13 @@ import path from 'node:path'
 import process from 'node:process'
 import util from 'node:util'
 import minimist from 'minimist'
-import cityGroupData from '@geekgeekrun/geek-auto-start-chat-with-boss/cityGroup.mjs'
 import { loadRuntimeConfig, getEnabledRecallKeywords, getGreetingRules, getResumeImagePath } from '../src/config.mjs'
 import { normalizeJobProfile } from '../src/job-profile.mjs'
 import { evaluateJobWithRules, selectGreetingWithPlan } from '../src/policy.mjs'
 import { evaluateJobWithLlm } from '../src/llm-evaluator.mjs'
 import { resolveFinalDecision } from '../src/final-decision.mjs'
 import { buildCandidateProfile, summarizeCandidateProfile } from '../src/candidate-profile.mjs'
+import { resolveCityCode } from '../src/city-codes.mjs'
 import { buildOrRefreshCapabilityProfile, inspectCapabilityProfileCache } from '../src/capability-profile.mjs'
 import {
   buildGuardedPersonalizedGreetingPlan,
@@ -23,6 +23,7 @@ import {
   issueAuthorizationToken,
 } from '../src/authorization-token.mjs'
 import { runAuthorizedActionIntent } from '../src/authorized-action.mjs'
+import { runMarketJobs } from '../src/market-jobs.mjs'
 import { runRecentApplications } from '../src/recent-applications.mjs'
 import {
   extractCurrentJobFromBrowser,
@@ -37,10 +38,8 @@ import {
 } from '../src/browser-actions.mjs'
 import { appendAuditLog, buildAuditRecord, createRunId } from '../src/audit-log.mjs'
 
-let flatCityListCache = null
-
 const argv = minimist(process.argv.slice(2), {
-  boolean: ['from-browser', 'headless', 'llm', 'confirm', 'refresh', 'include-jd', 'analyze'],
+  boolean: ['from-browser', 'headless', 'llm', 'confirm', 'refresh', 'include-jd', 'analyze', 'plan-only'],
   string: [
     'job',
     'title',
@@ -67,6 +66,7 @@ const argv = minimist(process.argv.slice(2), {
     'action',
     'run-id',
     'final-decision',
+    'keyword',
     'limit',
     'output',
     'analysis-output',
@@ -111,6 +111,8 @@ async function dispatch (command, argv) {
       return authorizedAction(argv)
     case 'recent-applications':
       return recentApplications(argv)
+    case 'market-jobs':
+      return marketJobs(argv)
     case 'run-once':
       return runOnce(argv)
     case 'run-batch':
@@ -347,6 +349,22 @@ async function recentApplications (argv) {
     headless: argv.headless,
     browserUrl: argv['browser-url'],
     cdpPort: argv['cdp-port'],
+  })
+  if (!result.ok) process.exitCode = 1
+  return result
+}
+
+async function marketJobs (argv) {
+  const result = await runMarketJobs({
+    fromBrowser: argv['from-browser'],
+    planOnly: argv['plan-only'],
+    keywords: argv.keyword,
+    cities: argv.city,
+    recallKeywords: argv['recall-keyword'],
+    limit: argv.limit,
+    analyze: argv.analyze,
+    outputPath: argv.output,
+    analysisOutputPath: argv['analysis-output'],
   })
   if (!result.ok) process.exitCode = 1
   return result
@@ -908,28 +926,6 @@ function getBatchCityCodes (argv, boss) {
   return resolved.length ? uniqueStrings(resolved) : ['']
 }
 
-function resolveCityCode (value) {
-  const normalized = String(value ?? '').trim()
-  if (!normalized) return ''
-  if (/^\d+$/.test(normalized)) return normalized
-  const city = getFlatCityList().find(item => item.name === normalized)
-  return city?.code ? String(city.code) : ''
-}
-
-function getFlatCityList () {
-  if (flatCityListCache) return flatCityListCache
-  flatCityListCache = []
-  for (const group of cityGroupData?.zpData?.cityGroup ?? []) {
-    for (const city of group.cityList ?? []) {
-      flatCityListCache.push({ ...city, firstChar: group.firstChar })
-    }
-  }
-  for (const city of cityGroupData?.zpData?.hotCityList ?? []) {
-    flatCityListCache.push({ ...city, firstChar: city.firstChar })
-  }
-  return flatCityListCache
-}
-
 function uniqueStrings (items) {
   const seen = new Set()
   const unique = []
@@ -1180,6 +1176,7 @@ function usage () {
       'ggr authorization-token consume --token-id token-id [--token-file file] [--action start_chat]',
       'ggr authorized-action --action start_chat --token-id token-id [--token-file file] [--audit-file file] [--confirm]',
       'ggr recent-applications --from-browser [--limit 100] [--include-jd] [--analyze] [--output file] [--analysis-output file] [--browser-url url|--cdp-port port]',
+      'ggr market-jobs --plan-only --keyword value --city name-or-code [--limit 200] [--analyze] [--output file] [--analysis-output file]',
       'ggr run-once --job job.json [--llm] [--confirm]',
       'ggr run-once --from-browser [--recall-keyword value] [--city code] [--llm] [--confirm]',
       'ggr run-batch --from-browser --llm --confirm [--target-count 20] [--max-candidates 160] [--candidate-timeout-ms 240000] [--progress-file file]',
