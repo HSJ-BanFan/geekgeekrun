@@ -164,6 +164,92 @@ test('market-jobs browser mode writes a one-sample raw artifact from visible sea
   })
 })
 
+test('market-jobs classifies contact state from visible list text without chat history', async () => {
+  await withTempOutput(async ({ outputPath }) => {
+    const page = createMarketJobsPageFake({
+      batches: [
+        [
+          marketJob({
+            jobId: 'uncontacted-job',
+            title: '未沟通岗位',
+            contactState: '',
+            contactEvidenceText: '',
+            listText: '未沟通岗位\nTarget Co\n25-35K\n立即沟通',
+          }),
+          marketJob({
+            jobId: 'contacted-job',
+            title: '沟通过的岗位',
+            contactState: '',
+            contactEvidenceText: '',
+            listText: '沟通过的岗位\nPlatform Co\n20-30K\n继续沟通',
+          }),
+          marketJob({
+            jobId: 'applied-job',
+            title: '已投递岗位',
+            contactState: '',
+            contactEvidenceText: '',
+            listText: '已投递岗位\nApply Co\n18-28K\n已投递',
+          }),
+          marketJob({
+            jobId: 'unknown-job',
+            title: '状态冲突岗位',
+            contactState: '',
+            contactEvidenceText: '',
+            listText: '状态冲突岗位\nConflict Co\n30-40K\n立即沟通\n已投递',
+          }),
+          marketJob({
+            jobId: 'missing-state-job',
+            title: '无状态岗位',
+            contactState: '',
+            contactEvidenceText: '',
+            listText: '无状态岗位\nUnknown Co\n15-20K',
+          }),
+        ],
+      ],
+      failOnChatHistoryAccess: true,
+    })
+
+    const result = await runMarketJobsOnOpenPage(page, {
+      keywords: ['AI'],
+      cities: [{ cityInput: '上海', cityCode: '101020100' }],
+      limit: 5,
+      outputPath,
+      navigationSettleMs: 0,
+      scrollSettleMs: 0,
+      now: new Date('2026-07-09T08:00:00.000Z'),
+    })
+
+    assert.equal(result.ok, true)
+
+    const artifact = JSON.parse(fs.readFileSync(outputPath, 'utf8'))
+    assert.deepEqual(artifact.jobs.map(job => job.contactState), [
+      'uncontacted',
+      'contacted',
+      'applied_or_chatting',
+      'unknown',
+      'unknown',
+    ])
+    assert.deepEqual(artifact.jobs.map(job => job.contactStateEvidence.text), [
+      '立即沟通',
+      '继续沟通',
+      '已投递',
+      'conflicting: 已投递 / 立即沟通',
+      '',
+    ])
+    assert.deepEqual(artifact.jobs.map(job => job.observations[0].contactStateEvidence.text), [
+      '立即沟通',
+      '继续沟通',
+      '已投递',
+      'conflicting: 已投递 / 立即沟通',
+      '',
+    ])
+    assert.equal(artifact.statusSummary.contactStates.uncontacted, 1)
+    assert.equal(artifact.statusSummary.contactStates.contacted, 1)
+    assert.equal(artifact.statusSummary.contactStates.applied_or_chatting, 1)
+    assert.equal(artifact.statusSummary.contactStates.unknown, 2)
+  })
+})
+
 test('market-jobs list stage scrolls until no new visible cards are found', async () => {
   await withTempOutput(async ({ outputPath }) => {
     const page = createMarketJobsPageFake({
@@ -498,6 +584,7 @@ function marketJob ({
   recruiter = { name: '王经理', title: '招聘经理', activeText: '刚刚活跃' },
   companySummary = { industry: '互联网', financingStage: 'B轮', size: '100-499人', tags: ['AI'] },
   sourceUrl = '',
+  listText = `${title}\n${company}\n${salaryText}\n${contactEvidenceText}`,
 } = {}) {
   const job = {
     jobId,
@@ -513,7 +600,7 @@ function marketJob ({
     contactEvidenceText,
     recruiter,
     companySummary,
-    listText: `${title}\n${company}\n${salaryText}\n${contactEvidenceText}`,
+    listText,
   }
   if (sourceUrl) job.sourceUrl = sourceUrl
   return job
@@ -524,6 +611,7 @@ function createMarketJobsPageFake ({
   sampleBatches = null,
   blockedReasonCode = '',
   onGoto = () => {},
+  failOnChatHistoryAccess = false,
 } = {}) {
   let currentUrl = 'about:blank'
   let batchIndex = 0
@@ -541,6 +629,9 @@ function createMarketJobsPageFake ({
     async waitForFunction () {},
     async evaluate (fn) {
       const source = String(fn)
+      if (failOnChatHistoryAccess && /chatStore|friendInfos|recent-applications|recentApplications/i.test(source)) {
+        throw new Error('market-jobs attempted to access chat history sources')
+      }
       if (source.includes('readMarketJobsListStateInPage')) {
         if (blockedReasonCode) {
           return {

@@ -405,9 +405,16 @@ export function readMarketJobsListStateInPage () {
   }
 
   function classifyContactState (text) {
-    if (/已投递|投递成功/.test(text)) return { state: 'applied_or_chatting', evidenceText: '已投递' }
-    if (/继续沟通|已沟通|沟通中/.test(text)) return { state: 'contacted', evidenceText: text.match(/继续沟通|已沟通|沟通中/)?.[0] ?? '' }
-    if (/立即沟通/.test(text)) return { state: 'uncontacted', evidenceText: '立即沟通' }
+    const evidence = []
+    const applied = text.match(/已投递|投递成功|已申请/)
+    if (applied) evidence.push({ state: 'applied_or_chatting', text: applied[0] })
+    const contacted = text.match(/继续沟通|已沟通|沟通中|chat-entry|聊天入口|进入沟通/i)
+    if (contacted) evidence.push({ state: 'contacted', text: contacted[0] })
+    const uncontacted = text.match(/立即沟通/)
+    if (uncontacted) evidence.push({ state: 'uncontacted', text: uncontacted[0] })
+    const states = [...new Set(evidence.map(item => item.state))]
+    if (states.length > 1) return { state: 'unknown', evidenceText: `conflicting: ${uniqueStrings(evidence.map(item => item.text)).join(' / ')}` }
+    if (states.length === 1) return { state: states[0], evidenceText: evidence[0].text }
     return { state: 'unknown', evidenceText: '' }
   }
 
@@ -599,7 +606,15 @@ function normalizeMarketJob (rawJob, { sampleKey, rank, sourceUrl = '' }) {
         confidence: 'low',
         validJobIdentityAnchor: false,
       }
-  const contactState = normalizeContactState(rawJob?.contactState, rawJob?.listText)
+  const contact = classifyMarketJobContactState({
+    state: rawJob?.contactState,
+    evidenceText: firstString(rawJob?.contactEvidenceText, rawJob?.contactStateEvidence?.text),
+    listText: rawJob?.listText,
+  })
+  const contactStateEvidence = {
+    text: contact.evidenceText,
+    source: contact.evidenceText ? 'visible_page_text' : 'missing_visible_page_text',
+  }
   return {
     jobIdentity,
     jobId,
@@ -611,8 +626,9 @@ function normalizeMarketJob (rawJob, { sampleKey, rank, sourceUrl = '' }) {
     degree: firstString(rawJob?.degree),
     positionCategory: firstString(rawJob?.positionCategory),
     tags: uniqueStrings(rawJob?.tags ?? []),
-    contactState,
-    contactEvidenceText: firstString(rawJob?.contactEvidenceText),
+    contactState: contact.state,
+    contactEvidenceText: contact.evidenceText,
+    contactStateEvidence,
     recruiter: {
       name: firstString(rawJob?.recruiter?.name),
       title: firstString(rawJob?.recruiter?.title),
@@ -629,8 +645,9 @@ function normalizeMarketJob (rawJob, { sampleKey, rank, sourceUrl = '' }) {
         sampleKey,
         rank,
         sourceRank: Number.isFinite(Number(rawJob?.sourceRank)) ? Number(rawJob.sourceRank) : rank,
-        contactState,
-        contactEvidenceText: firstString(rawJob?.contactEvidenceText),
+        contactState: contact.state,
+        contactEvidenceText: contact.evidenceText,
+        contactStateEvidence,
         listText: firstString(rawJob?.listText),
         source: {
           type: 'boss_geek_search_results',
@@ -780,14 +797,49 @@ function buildMissingJobFingerprint ({ title, company, salaryText, city, sampleK
     .join('|')
 }
 
-function normalizeContactState (value, listText = '') {
-  const raw = String(value ?? '').trim()
-  if (['uncontacted', 'contacted', 'applied_or_chatting', 'unknown'].includes(raw)) return raw
+function classifyMarketJobContactState ({ state = '', evidenceText = '', listText = '' } = {}) {
+  const visibleEvidence = extractVisibleContactStateEvidence(listText)
+  if (visibleEvidence.hasEvidence) return visibleEvidence
+
+  const explicitState = String(state ?? '').trim()
+  if (['uncontacted', 'contacted', 'applied_or_chatting', 'unknown'].includes(explicitState)) {
+    return {
+      state: explicitState,
+      evidenceText: firstString(evidenceText),
+      hasEvidence: Boolean(firstString(evidenceText)),
+    }
+  }
+
+  return { state: 'unknown', evidenceText: '', hasEvidence: false }
+}
+
+function extractVisibleContactStateEvidence (listText = '') {
   const text = String(listText ?? '')
-  if (/已投递|投递成功/.test(text)) return 'applied_or_chatting'
-  if (/继续沟通|已沟通|沟通中/.test(text)) return 'contacted'
-  if (/立即沟通/.test(text)) return 'uncontacted'
-  return 'unknown'
+  const evidence = []
+  const applied = text.match(/已投递|投递成功|已申请/)
+  if (applied) evidence.push({ state: 'applied_or_chatting', text: applied[0] })
+  const contacted = text.match(/继续沟通|已沟通|沟通中|chat-entry|聊天入口|进入沟通/i)
+  if (contacted) evidence.push({ state: 'contacted', text: contacted[0] })
+  const uncontacted = text.match(/立即沟通/)
+  if (uncontacted) evidence.push({ state: 'uncontacted', text: uncontacted[0] })
+
+  const states = [...new Set(evidence.map(item => item.state))]
+  if (states.length > 1) {
+    return {
+      state: 'unknown',
+      evidenceText: `conflicting: ${uniqueStrings(evidence.map(item => item.text)).join(' / ')}`,
+      hasEvidence: true,
+    }
+  }
+  if (states.length === 1) {
+    return {
+      state: states[0],
+      evidenceText: evidence[0].text,
+      hasEvidence: true,
+    }
+  }
+
+  return { state: 'unknown', evidenceText: '', hasEvidence: false }
 }
 
 function sanitizeMarketJobsSourceUrl (value) {
