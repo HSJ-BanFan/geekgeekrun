@@ -135,3 +135,7 @@ _Avoid_: recent chat assumption, blind fallback send
 **Agent Orchestrator**:
 The coordinator that runs the job-seeker application loop by consuming Decision Evidence and invoking authorized CLI actions. It must not bypass Application Authorization, Rule Boundaries, Job Identity Anchors, Job Match Guards, or audit requirements.
 _Avoid_: browser bot, direct DOM agent, auto-apply script
+
+**Job-Agent Contract Gate**:
+A deterministic repository gate for changes that could affect the Node CLI, Python sidecar, or their JSON-first integration boundary. It protects job-agent contracts and safety boundaries without depending on live BOSS login state, real browser actions, UI release builds, or operator-only workflows.
+_Avoid_: UI release workflow, live BOSS smoke test, real-action CI, full-product build gate

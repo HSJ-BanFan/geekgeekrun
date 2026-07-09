@@ -1,0 +1,102 @@
+name: Job-Agent Contract Gate
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/job-agent-contract-gate.yml"
+      - ".npmrc"
+      - "CONTEXT.md"
+      - "docs/adr/**"
+      - "docs/issues/**"
+      - "docs/prd/**"
+      - "package.json"
+      - "packages/geek-auto-start-chat-with-boss/**"
+      - "packages/job-agent-cli/**"
+      - "packages/job-agent-sidecar/**"
+      - "packages/laodeng/**"
+      - "packages/sqlite-plugin/**"
+      - "packages/utils/**"
+      - "patches/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/job-agent-contract-gate.yml"
+      - ".npmrc"
+      - "CONTEXT.md"
+      - "docs/adr/**"
+      - "docs/issues/**"
+      - "docs/prd/**"
+      - "package.json"
+      - "packages/geek-auto-start-chat-with-boss/**"
+      - "packages/job-agent-cli/**"
+      - "packages/job-agent-sidecar/**"
+      - "packages/laodeng/**"
+      - "packages/sqlite-plugin/**"
+      - "packages/utils/**"
+      - "patches/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: job-agent-contract-gate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  job-agent-cli:
+    name: job-agent-cli
+    runs-on: ubuntu-22.04
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: "true"
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 8.15.9
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.16.0
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check CLI syntax
+        run: pnpm --filter @geekgeekrun/job-agent-cli check
+
+      - name: Test CLI
+        run: pnpm --filter @geekgeekrun/job-agent-cli test
+
+  job-agent-sidecar:
+    name: job-agent-sidecar
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: packages/job-agent-sidecar/pyproject.toml
+
+      - name: Install sidecar test dependencies
+        working-directory: packages/job-agent-sidecar
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test]"
+
+      - name: Test sidecar
+        working-directory: packages/job-agent-sidecar
+        run: python -m pytest
