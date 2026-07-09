@@ -132,6 +132,37 @@ test('confirmed start_chat rejects missing, expired, consumed, and unauthorized-
   })
 })
 
+test('preference action suggestions cannot be treated as Application Authorization', async () => {
+  await withTempTokenFiles(async ({ tokenFile, auditFile }) => {
+    const preferenceSuggestion = JSON.stringify({
+      type: 'search_keyword',
+      suggestion: 'Python FastAPI LLM Agent',
+      nonAuthorizing: true,
+      grantsApplicationAuthorization: false,
+      canTriggerBrowserAction: false,
+      candidateRetrievalEffect: 'metadata_only_no_hard_delete',
+    })
+    let touchedBrowser = false
+
+    const output = await runAuthorizedActionIntent({
+      action: 'start_chat',
+      tokenId: preferenceSuggestion,
+      tokenFile,
+      auditFile,
+      confirm: true,
+      now: new Date('2026-07-07T10:00:30.000Z'),
+      executeAction: async () => {
+        touchedBrowser = true
+        return { result: { success: true } }
+      },
+    })
+
+    assert.equal(output.ok, false)
+    assert.equal(output.reasonCode, 'TOKEN_NOT_FOUND')
+    assert.equal(touchedBrowser, false)
+  })
+})
+
 test('confirmed start_chat rejects a token whose Job Identity Anchor does not match the current browser target', async () => {
   await withTempTokenFiles(async ({ tokenFile, auditFile }) => {
     const issued = issueTestToken({ tokenFile, allowedActions: ['start_chat'] })

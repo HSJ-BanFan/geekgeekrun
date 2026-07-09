@@ -279,11 +279,23 @@ class ApplicationPreferenceUncertainty(StrictPreferenceModel):
     impact: str
 
 
+class ApplicationPreferenceActionPatternRef(StrictPreferenceModel):
+    sourceField: Literal[
+        "excludePatterns",
+        "downrankPatterns",
+        "sideTrackOnlyPatterns",
+    ]
+    patternIndex: int = Field(ge=0)
+    patternLabel: str | None = None
+
+
 class ApplicationPreferenceActionSuggestion(StrictPreferenceModel):
     type: Literal[
         "search_keyword",
         "include_signal",
+        "avoid_term",
         "downrank_signal",
+        "downrank_hint",
         "side_track_query",
         "greeting_framing_hint",
         "resume_framing_hint",
@@ -292,8 +304,16 @@ class ApplicationPreferenceActionSuggestion(StrictPreferenceModel):
     suggestion: str
     rationale: str
     evidenceRefs: list[str] = Field(default_factory=list)
+    preferencePatternRefs: list[ApplicationPreferenceActionPatternRef] = Field(
+        default_factory=list
+    )
     nonAuthorizing: Literal[True] = True
     grantsApplicationAuthorization: Literal[False] = False
+    canTriggerBrowserAction: Literal[False] = False
+    consumesApplicationAuthorizationToken: Literal[False] = False
+    candidateRetrievalEffect: Literal["metadata_only_no_hard_delete"] = (
+        "metadata_only_no_hard_delete"
+    )
 
 
 class ApplicationPreferenceFreshnessMetadata(StrictPreferenceModel):
@@ -650,6 +670,16 @@ def _build_application_preference_profile_messages(
                     "profileConfidence must be low or medium.",
                     "For cold start, report evidenceStrength.recentApplicationEvidence as none.",
                     "The profile is Decision Evidence only and grants no Application Authorization.",
+                    "Preference Action Suggestions are metadata only: set nonAuthorizing true, "
+                    "grantsApplicationAuthorization false, canTriggerBrowserAction false, "
+                    "consumesApplicationAuthorizationToken false, and candidateRetrievalEffect "
+                    "to metadata_only_no_hard_delete.",
+                    "Use suggestion types search_keyword, include_signal, avoid_term, "
+                    "downrank_hint, side_track_query, greeting_framing_hint, "
+                    "resume_framing_hint, and target_jd_sample_request.",
+                    "Suggestions may reference excludePatterns, downrankPatterns, and "
+                    "sideTrackOnlyPatterns through preferencePatternRefs, but they must not "
+                    "hard-delete retrieved candidates or trigger browser actions.",
                     "Return only one JSON object and no markdown.",
                 ]
             ),
@@ -808,6 +838,13 @@ def _validate_application_preference_profile(
             cold_start_errors,
         )
 
+    suggestion_errors = _preference_action_suggestion_validation_errors(profile)
+    if suggestion_errors:
+        raise ApplicationPreferenceProfileValidationError(
+            "schema_error",
+            suggestion_errors,
+        )
+
 
 def _unknown_evidence_ref_errors(
     profile: ApplicationPreferenceProfile,
@@ -876,6 +913,80 @@ def _cold_start_profile_validation_errors(
                     type="value_error.cold_start_evidence_strength",
                 )
             )
+    return errors
+
+
+def _preference_action_suggestion_validation_errors(
+    profile: ApplicationPreferenceProfile,
+) -> list[ValidationFailure]:
+    errors: list[ValidationFailure] = []
+    fields_by_name = {
+        "excludePatterns": profile.excludePatterns,
+        "downrankPatterns": profile.downrankPatterns,
+        "sideTrackOnlyPatterns": profile.sideTrackOnlyPatterns,
+    }
+    preferred_source_by_type = {
+        "avoid_term": "excludePatterns",
+        "downrank_signal": "downrankPatterns",
+        "downrank_hint": "downrankPatterns",
+        "side_track_query": "sideTrackOnlyPatterns",
+    }
+    for suggestion_index, suggestion in enumerate(profile.preferenceActionSuggestions):
+        preferred_source = preferred_source_by_type.get(suggestion.type)
+        for ref_index, pattern_ref in enumerate(suggestion.preferencePatternRefs):
+            patterns = fields_by_name[pattern_ref.sourceField]
+            if preferred_source is not None and pattern_ref.sourceField != preferred_source:
+                errors.append(
+                    ValidationFailure(
+                        loc=[
+                            "preferenceActionSuggestions",
+                            suggestion_index,
+                            "preferencePatternRefs",
+                            ref_index,
+                            "sourceField",
+                        ],
+                        msg=(
+                            f"{suggestion.type} suggestions must reference "
+                            f"{preferred_source}"
+                        ),
+                        type="value_error.pattern_ref_source_mismatch",
+                    )
+                )
+            if pattern_ref.patternIndex >= len(patterns):
+                errors.append(
+                    ValidationFailure(
+                        loc=[
+                            "preferenceActionSuggestions",
+                            suggestion_index,
+                            "preferencePatternRefs",
+                            ref_index,
+                            "patternIndex",
+                        ],
+                        msg=(
+                            f"{pattern_ref.sourceField}[{pattern_ref.patternIndex}] "
+                            "does not exist"
+                        ),
+                        type="value_error.unknown_pattern_ref",
+                    )
+                )
+                continue
+            if (
+                pattern_ref.patternLabel is not None
+                and pattern_ref.patternLabel != patterns[pattern_ref.patternIndex].label
+            ):
+                errors.append(
+                    ValidationFailure(
+                        loc=[
+                            "preferenceActionSuggestions",
+                            suggestion_index,
+                            "preferencePatternRefs",
+                            ref_index,
+                            "patternLabel",
+                        ],
+                        msg="patternLabel does not match the referenced pattern",
+                        type="value_error.pattern_ref_label_mismatch",
+                    )
+                )
     return errors
 
 

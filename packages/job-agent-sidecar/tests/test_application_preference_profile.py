@@ -140,6 +140,148 @@ def test_profile_validation_rejects_invented_evidence_refs(tmp_path: Path) -> No
     ]
 
 
+def test_preference_action_suggestions_are_metadata_with_pattern_refs(
+    tmp_path: Path,
+) -> None:
+    evidence_path = write_evidence_package(tmp_path)
+    output_path = tmp_path / "profile.json"
+    payload = valid_profile_payload(evidence_path)
+    refs = evidence_refs(evidence_path)
+    payload["preferenceActionSuggestions"] = [
+        suggestion("search_keyword", "Python FastAPI LLM Agent", refs[:1]),
+        suggestion("include_signal", "Prioritize backend automation", refs[1:2]),
+        suggestion(
+            "avoid_term",
+            "Avoid generic sales and customer service queries",
+            refs[2:3],
+            preference_pattern_refs=[
+                {
+                    "sourceField": "excludePatterns",
+                    "patternIndex": 0,
+                    "patternLabel": "Generic sales, service, and operations",
+                }
+            ],
+        ),
+        suggestion(
+            "downrank_hint",
+            "Downrank weak AI annotation roles",
+            refs[3:4],
+            preference_pattern_refs=[
+                {
+                    "sourceField": "downrankPatterns",
+                    "patternIndex": 0,
+                    "patternLabel": "Weak AI annotation or audit work",
+                }
+            ],
+        ),
+        suggestion(
+            "side_track_query",
+            "Run remote MTPE searches separately",
+            refs[4:5],
+            preference_pattern_refs=[
+                {
+                    "sourceField": "sideTrackOnlyPatterns",
+                    "patternIndex": 0,
+                    "patternLabel": "Remote MTPE and LQA work stays side-track only",
+                }
+            ],
+        ),
+        suggestion("greeting_framing_hint", "Frame automation workflow evidence", refs[5:6]),
+        suggestion("resume_framing_hint", "Surface FastAPI and LLM tool projects", refs[6:7]),
+        suggestion("target_jd_sample_request", "Ask for one ideal AI backend JD", []),
+    ]
+
+    result = generate_application_preference_profile_from_file(
+        evidence_path,
+        output_path=output_path,
+        llm_client=lambda _messages: payload,
+    )
+
+    assert result.ok is True
+    written = json.loads(output_path.read_text(encoding="utf-8"))
+    suggestions = written["preferenceActionSuggestions"]
+    assert {item["type"] for item in suggestions} == {
+        "search_keyword",
+        "include_signal",
+        "avoid_term",
+        "downrank_hint",
+        "side_track_query",
+        "greeting_framing_hint",
+        "resume_framing_hint",
+        "target_jd_sample_request",
+    }
+    for item in suggestions:
+        assert item["nonAuthorizing"] is True
+        assert item["grantsApplicationAuthorization"] is False
+        assert item["canTriggerBrowserAction"] is False
+        assert item["consumesApplicationAuthorizationToken"] is False
+        assert item["candidateRetrievalEffect"] == "metadata_only_no_hard_delete"
+
+    avoid = next(item for item in suggestions if item["type"] == "avoid_term")
+    assert avoid["preferencePatternRefs"] == [
+        {
+            "sourceField": "excludePatterns",
+            "patternIndex": 0,
+            "patternLabel": "Generic sales, service, and operations",
+        }
+    ]
+
+
+def test_profile_validation_rejects_browser_action_suggestions(
+    tmp_path: Path,
+) -> None:
+    evidence_path = write_evidence_package(tmp_path)
+    output_path = tmp_path / "profile.json"
+    payload = valid_profile_payload(evidence_path)
+    payload["preferenceActionSuggestions"][0]["canTriggerBrowserAction"] = True
+
+    result = generate_application_preference_profile_from_file(
+        evidence_path,
+        output_path=output_path,
+        llm_client=lambda _messages: payload,
+    )
+
+    assert result.ok is False
+    assert result.status == "schema_error"
+    assert output_path.exists() is False
+    assert result.validationErrors[0].loc == [
+        "preferenceActionSuggestions",
+        0,
+        "canTriggerBrowserAction",
+    ]
+
+
+def test_profile_validation_rejects_unknown_suggestion_pattern_ref(
+    tmp_path: Path,
+) -> None:
+    evidence_path = write_evidence_package(tmp_path)
+    output_path = tmp_path / "profile.json"
+    payload = valid_profile_payload(evidence_path)
+    payload["preferenceActionSuggestions"][0]["preferencePatternRefs"] = [
+        {
+            "sourceField": "excludePatterns",
+            "patternIndex": 99,
+        }
+    ]
+
+    result = generate_application_preference_profile_from_file(
+        evidence_path,
+        output_path=output_path,
+        llm_client=lambda _messages: payload,
+    )
+
+    assert result.ok is False
+    assert result.status == "schema_error"
+    assert output_path.exists() is False
+    assert result.validationErrors[0].loc == [
+        "preferenceActionSuggestions",
+        0,
+        "preferencePatternRefs",
+        0,
+        "patternIndex",
+    ]
+
+
 def test_profile_generation_rejects_malformed_output_without_writing(
     tmp_path: Path,
 ) -> None:
@@ -544,3 +686,28 @@ def preference_item(
         "constraints": ["Requires per-job evaluation before any application action."],
         "negativeSignals": negative_signals or [],
     }
+
+
+def evidence_refs(evidence_path: Path) -> list[str]:
+    package = json.loads(evidence_path.read_text(encoding="utf-8"))
+    return [entry["id"] for entry in package["evidenceIndex"]]
+
+
+def suggestion(
+    suggestion_type: str,
+    text: str,
+    refs: list[str],
+    *,
+    preference_pattern_refs: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "type": suggestion_type,
+        "suggestion": text,
+        "rationale": "Supports planning without authorizing application actions.",
+        "evidenceRefs": refs,
+        "nonAuthorizing": True,
+        "grantsApplicationAuthorization": False,
+    }
+    if preference_pattern_refs is not None:
+        payload["preferencePatternRefs"] = preference_pattern_refs
+    return payload
