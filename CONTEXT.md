@@ -40,6 +40,10 @@ _Avoid_: search keyword, job source, keyword intent
 The candidate facts used to judge whether a job fit is credible, including resume evidence, expected role, projects, experience, and relevant skills. Candidate Profile supports or weakens a Target Role Intent but is not a standalone application trigger.
 _Avoid_: resume text dump, keyword profile, configured filter
 
+**Candidate Statement**:
+The job seeker's explicit, conversationally stated preferences and constraints for a job search, including desired role direction, main-track and side-track goals, availability, location or remote preferences, unacceptable roles, and self-described capability boundaries.
+_Avoid_: chat transcript, vague user portrait, inferred intent
+
 **Evidence-Based Framing**:
 A truthful presentation of Candidate Profile facts that emphasizes evidence relevant to a target role without inventing missing credentials, experience, outcomes, technical depth, availability, or personal history.
 _Avoid_: fabrication, resume padding, hallucinated fit
@@ -47,6 +51,62 @@ _Avoid_: fabrication, resume padding, hallucinated fit
 **Candidate Capability Profile**:
 A reusable analysis of the candidate's demonstrated abilities, supporting evidence, target-role direction, transferable strengths, gaps, and framing boundaries derived from the Candidate Profile and Target Role Intent.
 _Avoid_: raw resume, generated resume, job-specific pitch
+
+**Application Preference Profile**:
+A reusable analysis of the job seeker's desired application directions, observed application history, main-track and side-track role preferences, known noise patterns, uncertain preferences, and preference evidence. It informs future preference review, search planning, and LLM Apply Decision context, but it does not grant Application Authorization or replace per-job evaluation.
+_Avoid_: user portrait, JD analysis result, application intent cache, auto-apply preference
+
+**Preference Confidence**:
+The stated reliability level of an Application Preference Profile based on the available evidence and unresolved uncertainty. Cold-start profiles may be useful, but they must report lower confidence instead of pretending historical evidence exists.
+_Avoid_: apply score, match score, hidden certainty
+
+**Evidence Strength**:
+A per-input assessment of how strongly Candidate Statement, Candidate Capability Profile, Recent Application Evidence, Target JD Samples, and clarification answers support an Application Preference Profile.
+_Avoid_: generic confidence, LLM certainty, final decision score
+
+**Preference Evidence Reference**:
+A stable reference from a preference item back to the specific counts, examples, candidate statements, capability-profile facts, target JD samples, or clarification answers that support it.
+_Avoid_: vague rationale, hidden LLM reasoning, untraceable score
+
+**Preference Clarification Session**:
+A conversational process that asks the job seeker targeted questions to resolve missing, noisy, or conflicting preference evidence before generating or refreshing an Application Preference Profile.
+_Avoid_: static preference report, generic career coaching, application decision
+
+**Preference Evidence Package**:
+A deterministic, redacted, normalized evidence bundle prepared for LLM preference analysis. It summarizes Candidate Statement, Candidate Capability Profile signals, Recent Application Evidence, Target JD Samples, extracted role signals, counts, examples, conflicts, and missing data without exposing raw uncleaned inputs; by default it contains summaries, labels, and representative snippets rather than full JD text.
+_Avoid_: raw JD dump, full chat transcript, final preference profile, LLM scratchpad
+
+**Preference Action Suggestion**:
+A non-authorizing recommendation derived from an Application Preference Profile, such as search keywords, include signals, downrank signals, side-track queries, greeting framing hints, or resume framing hints. It may guide planning, but it must not trigger or authorize a real application action.
+_Avoid_: automated action, application authorization, apply command
+
+**Main-Track Preference**:
+A role preference optimized for career direction, skill growth, internship or full-time positioning, and future Application Decision support. Main-track preferences must not be inferred from side-track cash-flow interests alone.
+_Avoid_: all preferred jobs, side income target, generic interest
+
+**Side-Track Preference**:
+A role preference optimized for cash flow, flexible remote work, language/localization work, or other secondary goals that the job seeker intentionally accepts outside their main career direction. Side-track preferences may be valid targets, but they must not pollute main-track job matching.
+_Avoid_: noise, fallback failure, main target
+
+**Recent Application Evidence**:
+Redacted, read-only evidence derived from recent historical applications or conversations and their job descriptions. It can inform an Application Preference Profile, but it is not Application Authorization and does not prove current intent by itself.
+_Avoid_: application permission, historical authorization, raw crawl dump
+
+**Market Job Evidence**:
+Redacted, read-only evidence derived from BOSS search or recommendation market listings for a keyword, city, and sampling window. Market Job Evidence may include contacted jobs for sampling integrity, but market-demand analysis defaults to uncontacted jobs unless the operator explicitly includes contacted jobs.
+_Avoid_: application target, application authorization, auto-apply candidate
+
+**Market Keyword**:
+A search input used only to sample BOSS market listings for supply and demand review. A Market Keyword is not a Recall Keyword and must not imply that sampled jobs entered an application candidate pool.
+_Avoid_: recall keyword, decision keyword, application keyword
+
+**Contact State**:
+The observed relationship between the job seeker and a market job at capture time, such as uncontacted, contacted, applied or chatting, or unknown. Contact State is evidence for filtering and analysis, not permission to perform a real action.
+_Avoid_: delivery status, application decision, authorization status
+
+**Target JD Sample**:
+A job description supplied or selected as an example of a role the job seeker may want to target. Target JD Samples help infer role requirements when Recent Application Evidence is missing, sparse, or noisy.
+_Avoid_: applied job, authorized job, final target
 
 **Personalized Greeting**:
 A short job-specific opening message generated from a Candidate Capability Profile and a target job description. A Personalized Greeting should use Evidence-Based Framing and fall back to a preset greeting when personalization is unavailable or unsafe.
