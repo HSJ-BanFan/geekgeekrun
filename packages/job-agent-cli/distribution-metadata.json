@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "job-agent-distribution-metadata.v1",
+  "name": "geekgeekrun-job-agent",
+  "distributionVersion": "0.1.0",
+  "channel": "prerelease",
+  "contracts": {
+    "cli": "job-agent-cli.v1",
+    "installationManifest": "job-agent-installation-manifest.v1",
+    "marketJobs": "market-jobs.v1",
+    "marketJobsAnalysis": "market-jobs-analysis.v1"
+  },
+  "features": {
+    "nodeCli": true,
+    "sidecar": true,
+    "openaiAgentsSdk": false
+  }
+}
