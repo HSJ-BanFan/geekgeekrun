@@ -78,6 +78,25 @@ test('installed ggr --version reports the manifest distribution through the publ
   })
 })
 
+test('installed ggr agent dispatches the manifest sidecar and preserves JSON stdout', async () => {
+  await withInstalledFixture(async ({ cwd, env, installRoot, manifestPath, sidecarPath }) => {
+    fs.rmSync(sidecarPath)
+    copyExecutable(process.execPath, sidecarPath)
+    updateManifestComponent({ installRoot, manifestPath, name: 'sidecar', filePath: sidecarPath })
+
+    const expression = `JSON.stringify({ ok: true, command: 'sidecar-fixture', argv: process.argv.slice(1) })`
+    const { stdout, stderr } = await runGgr(['agent', '--print', expression], { cwd, env })
+    const output = JSON.parse(stdout)
+
+    assert.equal(stderr, '')
+    assert.deepEqual(output, {
+      ok: true,
+      command: 'sidecar-fixture',
+      argv: [],
+    })
+  })
+})
+
 test('ggr doctor --require-browser fails with a stable reason when installation is healthy but browser setup is absent', async () => {
   await withInstalledFixture(async ({ cwd, env }) => {
     await assert.rejects(
@@ -289,13 +308,16 @@ async function withInstalledFixture (callback) {
   const runtimeHome = path.join(tempDir, 'runtime-home')
   const desktopHome = path.join(tempDir, 'desktop-home')
   const cliPath = path.join(installRoot, 'app', 'ggr.mjs')
+  const nodeRuntimePath = path.join(installRoot, 'runtime', 'node.exe')
   const sidecarPath = path.join(installRoot, 'sidecar', 'ggr-sidecar.exe')
   const manifestPath = path.join(installRoot, 'job-agent-installation-manifest.json')
 
   fs.mkdirSync(path.dirname(cliPath), { recursive: true })
+  fs.mkdirSync(path.dirname(nodeRuntimePath), { recursive: true })
   fs.mkdirSync(path.dirname(sidecarPath), { recursive: true })
   fs.mkdirSync(cwd, { recursive: true })
   fs.writeFileSync(cliPath, 'installed cli fixture\n')
+  fs.writeFileSync(nodeRuntimePath, 'installed node runtime fixture\n')
   fs.writeFileSync(sidecarPath, 'installed sidecar fixture\n')
   fs.writeFileSync(manifestPath, JSON.stringify({
     schemaVersion: 'job-agent-installation-manifest.v1',
@@ -312,6 +334,7 @@ async function withInstalledFixture (callback) {
       openaiAgentsSdk: false,
     },
     components: {
+      nodeRuntime: componentRecord(installRoot, nodeRuntimePath),
       nodeCli: componentRecord(installRoot, cliPath),
       sidecar: componentRecord(installRoot, sidecarPath),
     },
@@ -320,9 +343,11 @@ async function withInstalledFixture (callback) {
   try {
     await callback({
       cwd,
+      installRoot,
       runtimeHome,
       desktopHome,
       cliPath,
+      nodeRuntimePath,
       sidecarPath,
       manifestPath,
       env: {
@@ -343,4 +368,15 @@ function componentRecord (installRoot, filePath) {
     path: path.relative(installRoot, filePath).replaceAll(path.sep, '/'),
     sha256: crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex'),
   }
+}
+
+function updateManifestComponent ({ installRoot, manifestPath, name, filePath }) {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+  manifest.components[name] = componentRecord(installRoot, filePath)
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2))
+}
+
+function copyExecutable (sourcePath, destinationPath) {
+  fs.copyFileSync(sourcePath, destinationPath)
+  fs.chmodSync(destinationPath, 0o755)
 }

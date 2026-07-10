@@ -20,6 +20,7 @@ from .application_preferences import (
 )
 from .approval import make_terminal_approval_requester
 from .observability import build_observability_report
+from .runtime import RuntimeDiscoveryError, build_version_report
 from .schemas import CliToolResult
 from .subprocess_runner import run_confirmed_batch, run_dry_run_batch
 
@@ -30,6 +31,11 @@ def build_parser() -> argparse.ArgumentParser:
         description="Supervise job batches through the existing Node CLI.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    subparsers.add_parser(
+        "version",
+        help="Report the sidecar distribution version and bundled feature set.",
+    )
 
     dry_run_batch = subparsers.add_parser(
         "supervise-dry-run-batch",
@@ -117,8 +123,28 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except RuntimeDiscoveryError as error:
+        _write_json_payload(
+            {
+                "ok": False,
+                "command": _requested_command(argv),
+                "status": "runtime_error",
+                "reasonCode": error.reason_code,
+                "error": str(error),
+            }
+        )
+        return 1
+
+
+def _main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.command == "version":
+        _write_json_payload(build_version_report())
+        return 0
 
     if args.command == "supervise-dry-run-batch":
         result = run_dry_run_batch(
@@ -298,8 +324,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _add_batch_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--repo-root", type=Path, default=_default_repo_root())
-    parser.add_argument("--node", default="node")
+    parser.add_argument("--repo-root", type=Path)
+    parser.add_argument("--node")
     parser.add_argument("--timeout-ms", type=int, default=300_000)
     parser.add_argument("--target-count", type=int, default=1)
     parser.add_argument("--max-candidates", type=int)
@@ -313,8 +339,8 @@ def _add_batch_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_single_job_loop_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--repo-root", type=Path, default=_default_repo_root())
-    parser.add_argument("--node", default="node")
+    parser.add_argument("--repo-root", type=Path)
+    parser.add_argument("--node")
     parser.add_argument("--timeout-ms", type=int, default=300_000)
     parser.add_argument("--job", type=Path)
     parser.add_argument("--from-browser", action="store_true")
@@ -331,8 +357,8 @@ def _add_single_job_loop_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_tokened_batch_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--repo-root", type=Path, default=_default_repo_root())
-    parser.add_argument("--node", default="node")
+    parser.add_argument("--repo-root", type=Path)
+    parser.add_argument("--node")
     parser.add_argument("--timeout-ms", type=int, default=300_000)
     parser.add_argument("--run-id")
     parser.add_argument("--token-file", type=Path)
@@ -379,8 +405,9 @@ def _write_json_payload(payload) -> None:
         sys.stdout.write(data.decode("utf-8"))
 
 
-def _default_repo_root() -> Path:
-    return Path(__file__).resolve().parents[4]
+def _requested_command(argv: list[str] | None) -> str | None:
+    raw_argv = sys.argv[1:] if argv is None else argv
+    return raw_argv[0] if raw_argv else None
 
 
 def _progress_file_from_result(result) -> str | None:

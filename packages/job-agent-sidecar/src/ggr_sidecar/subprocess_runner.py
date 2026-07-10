@@ -16,6 +16,7 @@ from .approval import (
     normalize_approval_decision,
 )
 from .schemas import ApprovalTraceMetadata, CliToolResult, RunBatchOutput, ValidationFailure
+from .runtime import CliRuntime, resolve_cli_runtime
 
 CompletedRunner = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -23,7 +24,7 @@ CompletedRunner = Callable[..., subprocess.CompletedProcess[str]]
 def run_dry_run_batch(
     *,
     repo_root: Path | str | None = None,
-    node: str = "node",
+    node: str | None = None,
     timeout_ms: int = 300_000,
     target_count: int = 1,
     max_candidates: int | None = None,
@@ -36,10 +37,9 @@ def run_dry_run_batch(
     headless: bool = False,
     runner: CompletedRunner = subprocess.run,
 ) -> CliToolResult:
-    root = Path(repo_root) if repo_root is not None else _default_repo_root()
+    runtime = resolve_cli_runtime(repo_root=repo_root, node=node)
     command = build_dry_run_batch_command(
-        repo_root=root,
-        node=node,
+        runtime=runtime,
         target_count=target_count,
         max_candidates=max_candidates,
         candidate_timeout_ms=candidate_timeout_ms,
@@ -52,7 +52,7 @@ def run_dry_run_batch(
     )
     return run_cli_json_tool(
         command=command,
-        cwd=root,
+        cwd=runtime.cwd,
         timeout_ms=timeout_ms,
         expected_dry_run=True,
         runner=runner,
@@ -62,7 +62,7 @@ def run_dry_run_batch(
 def run_confirmed_batch(
     *,
     repo_root: Path | str | None = None,
-    node: str = "node",
+    node: str | None = None,
     timeout_ms: int = 300_000,
     target_count: int = 1,
     max_candidates: int | None = None,
@@ -76,7 +76,7 @@ def run_confirmed_batch(
     approval_requester: ApprovalRequester | None = None,
     runner: CompletedRunner = subprocess.run,
 ) -> CliToolResult:
-    root = Path(repo_root) if repo_root is not None else _default_repo_root()
+    runtime = resolve_cli_runtime(repo_root=repo_root, node=node)
     normalized_keywords = recall_keywords or []
     normalized_cities = cities or []
     approval_request = build_confirmed_batch_approval_request(
@@ -104,8 +104,7 @@ def run_confirmed_batch(
         )
 
     command = build_confirmed_batch_command(
-        repo_root=root,
-        node=node,
+        runtime=runtime,
         target_count=target_count,
         max_candidates=max_candidates,
         candidate_timeout_ms=candidate_timeout_ms,
@@ -118,7 +117,7 @@ def run_confirmed_batch(
     )
     result = run_cli_json_tool(
         command=command,
-        cwd=root,
+        cwd=runtime.cwd,
         timeout_ms=timeout_ms,
         expected_dry_run=False,
         approval=approval,
@@ -129,8 +128,9 @@ def run_confirmed_batch(
 
 def build_dry_run_batch_command(
     *,
-    repo_root: Path,
-    node: str,
+    repo_root: Path | str | None = None,
+    node: str | None = None,
+    runtime: CliRuntime | None = None,
     target_count: int,
     max_candidates: int | None,
     candidate_timeout_ms: int | None,
@@ -141,9 +141,9 @@ def build_dry_run_batch_command(
     llm: bool,
     headless: bool,
 ) -> list[str]:
+    cli_runtime = runtime or resolve_cli_runtime(repo_root=repo_root, node=node)
     return build_run_batch_command(
-        repo_root=repo_root,
-        node=node,
+        runtime=cli_runtime,
         target_count=target_count,
         max_candidates=max_candidates,
         candidate_timeout_ms=candidate_timeout_ms,
@@ -159,8 +159,9 @@ def build_dry_run_batch_command(
 
 def build_confirmed_batch_command(
     *,
-    repo_root: Path,
-    node: str,
+    repo_root: Path | str | None = None,
+    node: str | None = None,
+    runtime: CliRuntime | None = None,
     target_count: int,
     max_candidates: int | None,
     candidate_timeout_ms: int | None,
@@ -171,9 +172,9 @@ def build_confirmed_batch_command(
     llm: bool,
     headless: bool,
 ) -> list[str]:
+    cli_runtime = runtime or resolve_cli_runtime(repo_root=repo_root, node=node)
     return build_run_batch_command(
-        repo_root=repo_root,
-        node=node,
+        runtime=cli_runtime,
         target_count=target_count,
         max_candidates=max_candidates,
         candidate_timeout_ms=candidate_timeout_ms,
@@ -189,8 +190,9 @@ def build_confirmed_batch_command(
 
 def build_run_batch_command(
     *,
-    repo_root: Path,
-    node: str,
+    repo_root: Path | str | None = None,
+    node: str | None = None,
+    runtime: CliRuntime | None = None,
     target_count: int,
     max_candidates: int | None,
     candidate_timeout_ms: int | None,
@@ -202,10 +204,10 @@ def build_run_batch_command(
     headless: bool,
     confirm: bool,
 ) -> list[str]:
-    cli_path = repo_root / "packages" / "job-agent-cli" / "bin" / "ggr.mjs"
+    cli_runtime = runtime or resolve_cli_runtime(repo_root=repo_root, node=node)
     command = [
-        node,
-        str(cli_path),
+        cli_runtime.node_runtime,
+        str(cli_runtime.cli_path),
         "run-batch",
         "--from-browser",
         "--target-count",
@@ -331,10 +333,6 @@ def run_cli_json_tool(
         output=output,
         approval=approval,
     )
-
-
-def _default_repo_root() -> Path:
-    return Path(__file__).resolve().parents[4]
 
 
 def _decode_timeout_text(value: str | bytes | None) -> str:

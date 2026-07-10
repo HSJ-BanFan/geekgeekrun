@@ -19,6 +19,7 @@ from .approval import (
     missing_approval_trace,
     normalize_approval_decision,
 )
+from .runtime import CliRuntime, resolve_cli_runtime
 from .schemas import ApprovalTraceMetadata, FlexibleCliModel, ValidationFailure
 from .subprocess_runner import CompletedRunner
 
@@ -281,7 +282,8 @@ OutputT = TypeVar("OutputT", bound=BaseModel)
 def run_single_job_application_loop(
     *,
     repo_root: Path | str | None = None,
-    node: str = "node",
+    node: str | None = None,
+    cli_runtime: CliRuntime | None = None,
     timeout_ms: int = 300_000,
     job_file: Path | str | None = None,
     from_browser: bool = False,
@@ -298,8 +300,10 @@ def run_single_job_application_loop(
     strategy_approval: ApprovalTraceMetadata | None = None,
     runner: CompletedRunner = subprocess.run,
 ) -> ApplicationLoopResult:
-    root = Path(repo_root) if repo_root is not None else _default_repo_root()
-    cli_path = root / "packages" / "job-agent-cli" / "bin" / "ggr.mjs"
+    runtime = cli_runtime or resolve_cli_runtime(repo_root=repo_root, node=node)
+    root = runtime.cwd
+    node = runtime.node_runtime
+    cli_path = runtime.cli_path
     normalized_run_id = run_id or f"sidecar-{uuid.uuid4().hex[:12]}"
     normalized_keywords = list(recall_keywords or [])
     normalized_cities = list(cities or [])
@@ -510,7 +514,8 @@ def run_single_job_application_loop(
 def run_bounded_tokened_application_batch(
     *,
     repo_root: Path | str | None = None,
-    node: str = "node",
+    node: str | None = None,
+    cli_runtime: CliRuntime | None = None,
     timeout_ms: int = 300_000,
     batch_run_id: str | None = None,
     token_file: Path | str | None = None,
@@ -528,8 +533,10 @@ def run_bounded_tokened_application_batch(
     approval_requester: ApprovalRequester | None = None,
     runner: CompletedRunner = subprocess.run,
 ) -> BoundedBatchResult:
-    root = Path(repo_root) if repo_root is not None else _default_repo_root()
-    cli_path = root / "packages" / "job-agent-cli" / "bin" / "ggr.mjs"
+    runtime = cli_runtime or resolve_cli_runtime(repo_root=repo_root, node=node)
+    root = runtime.cwd
+    node = runtime.node_runtime
+    cli_path = runtime.cli_path
     normalized_batch_run_id = batch_run_id or f"sidecar-batch-{uuid.uuid4().hex[:12]}"
     normalized_target_count = _positive_int(target_count, 1)
     normalized_max_candidates = _positive_int(
@@ -588,8 +595,7 @@ def run_bounded_tokened_application_batch(
             timeout_ms=normalized_candidate_timeout_ms,
         )
         loop_result = run_single_job_application_loop(
-            repo_root=root,
-            node=node,
+            cli_runtime=runtime,
             timeout_ms=min(timeout_ms, normalized_candidate_timeout_ms),
             from_browser=True,
             run_id=candidate_run_id,
@@ -1739,7 +1745,3 @@ def _dedupe(values) -> list[str]:
         seen.add(value)
         output.append(value)
     return output
-
-
-def _default_repo_root() -> Path:
-    return Path(__file__).resolve().parents[4]

@@ -96,8 +96,10 @@ function diagnoseInstallation (runtimeContext) {
       checkComponent(installRoot, component),
     ])
   )
-  if (!componentChecks.nodeCli) {
-    componentChecks.nodeCli = componentFailure('COMPONENT_NOT_DECLARED')
+  for (const componentName of ['nodeRuntime', 'nodeCli']) {
+    if (!componentChecks[componentName]) {
+      componentChecks[componentName] = componentFailure('COMPONENT_NOT_DECLARED')
+    }
   }
   if (manifest.features?.sidecar && !componentChecks.sidecar) {
     componentChecks.sidecar = componentFailure('COMPONENT_NOT_DECLARED')
@@ -121,6 +123,37 @@ function diagnoseInstallation (runtimeContext) {
     integrity: 'verified',
     componentChecks,
     manifest,
+  }
+}
+
+export function resolveInstalledComponent (runtimeContext, componentName) {
+  if (runtimeContext.mode !== 'installed') {
+    return {
+      ok: false,
+      reasonCode: 'INSTALLED_RUNTIME_REQUIRED',
+      path: null,
+    }
+  }
+  const installation = diagnoseInstallation(runtimeContext)
+  if (!installation.ready) {
+    return {
+      ok: false,
+      reasonCode: installation.reasonCode,
+      path: null,
+    }
+  }
+  const component = installation.componentChecks?.[componentName]
+  if (!component?.ready) {
+    return {
+      ok: false,
+      reasonCode: component?.reasonCode ?? 'COMPONENT_NOT_DECLARED',
+      path: component?.path ?? null,
+    }
+  }
+  return {
+    ok: true,
+    reasonCode: null,
+    path: component.path,
   }
 }
 
