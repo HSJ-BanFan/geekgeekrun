@@ -141,9 +141,10 @@ def build_dry_run_batch_command(
     llm: bool,
     headless: bool,
 ) -> list[str]:
-    cli_runtime = runtime or resolve_cli_runtime(repo_root=repo_root, node=node)
     return build_run_batch_command(
-        runtime=cli_runtime,
+        repo_root=repo_root,
+        node=node,
+        runtime=runtime,
         target_count=target_count,
         max_candidates=max_candidates,
         candidate_timeout_ms=candidate_timeout_ms,
@@ -172,9 +173,10 @@ def build_confirmed_batch_command(
     llm: bool,
     headless: bool,
 ) -> list[str]:
-    cli_runtime = runtime or resolve_cli_runtime(repo_root=repo_root, node=node)
     return build_run_batch_command(
-        runtime=cli_runtime,
+        repo_root=repo_root,
+        node=node,
+        runtime=runtime,
         target_count=target_count,
         max_candidates=max_candidates,
         candidate_timeout_ms=candidate_timeout_ms,

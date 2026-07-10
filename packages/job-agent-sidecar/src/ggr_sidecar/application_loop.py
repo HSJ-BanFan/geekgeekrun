@@ -301,7 +301,7 @@ def run_single_job_application_loop(
     runner: CompletedRunner = subprocess.run,
 ) -> ApplicationLoopResult:
     runtime = cli_runtime or resolve_cli_runtime(repo_root=repo_root, node=node)
-    root = runtime.cwd
+    working_directory = runtime.cwd
     node = runtime.node_runtime
     cli_path = runtime.cli_path
     normalized_run_id = run_id or f"sidecar-{uuid.uuid4().hex[:12]}"
@@ -352,7 +352,7 @@ def run_single_job_application_loop(
         extract = _run_json_cli_tool(
             tool_name="extract-job",
             command=extract_command,
-            cwd=root,
+            cwd=working_directory,
             timeout_ms=timeout_ms,
             output_model=ExtractJobOutput,
             runner=runner,
@@ -376,7 +376,7 @@ def run_single_job_application_loop(
                 job_file=extracted_job_file,
                 llm=llm,
             ),
-            cwd=root,
+            cwd=working_directory,
             timeout_ms=timeout_ms,
             output_model=EvaluateJobOutput,
             runner=runner,
@@ -410,7 +410,7 @@ def run_single_job_application_loop(
                 ),
                 now=now,
             ),
-            cwd=root,
+            cwd=working_directory,
             timeout_ms=timeout_ms,
             output_model=AuthorizationTokenIssueOutput,
             runner=runner,
@@ -445,7 +445,7 @@ def run_single_job_application_loop(
                 token_id=token_id,
                 now=now,
             ),
-            cwd=root,
+            cwd=working_directory,
             timeout_ms=timeout_ms,
             output_model=AuthorizationTokenInspectOutput,
             runner=runner,
@@ -484,7 +484,7 @@ def run_single_job_application_loop(
                 recall_keywords=normalized_keywords,
                 cities=normalized_cities,
             ),
-            cwd=root,
+            cwd=working_directory,
             timeout_ms=timeout_ms,
             output_model=AuthorizedActionOutput,
             runner=runner,
@@ -534,7 +534,7 @@ def run_bounded_tokened_application_batch(
     runner: CompletedRunner = subprocess.run,
 ) -> BoundedBatchResult:
     runtime = cli_runtime or resolve_cli_runtime(repo_root=repo_root, node=node)
-    root = runtime.cwd
+    working_directory = runtime.cwd
     node = runtime.node_runtime
     cli_path = runtime.cli_path
     normalized_batch_run_id = batch_run_id or f"sidecar-batch-{uuid.uuid4().hex[:12]}"
@@ -722,7 +722,7 @@ def run_bounded_tokened_application_batch(
                 recall_keywords=normalized_keywords,
                 cities=normalized_cities,
             ),
-            cwd=root,
+            cwd=working_directory,
             timeout_ms=min(timeout_ms, normalized_candidate_timeout_ms),
             output_model=NextJobOutput,
             runner=runner,
