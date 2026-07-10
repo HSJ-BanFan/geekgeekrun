@@ -4,6 +4,8 @@
 
 - Distribution version:
 - Release tag:
+- Candidate workflow run ID:
+- Installer SHA-256:
 - Installer SHA-256 verified: pass / fail
 - Windows edition and build:
 - Browser product and version:

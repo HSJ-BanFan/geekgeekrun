@@ -1,7 +1,10 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
-import { createWindowsCredentialStore } from './credential-store.mjs'
+import {
+  createWindowsCredentialStore,
+  parseWindowsCredentialReference,
+} from './credential-store.mjs'
 
 const configSchemaVersion = 'job-agent-config.v1'
 
@@ -94,12 +97,28 @@ function validateConfig (paths) {
   const errors = []
   if (!operator.ok || !isRecord(operator.value) || operator.value.schemaVersion !== configSchemaVersion) {
     errors.push({ file: paths.operator, reasonCode: 'OPERATOR_CONFIG_INVALID' })
+  } else {
+    for (const [name, reference] of Object.entries(operator.value.credentials ?? {})) {
+      if (!/^[A-Za-z0-9._-]+$/.test(name) || !parseWindowsCredentialReference(reference)) {
+        errors.push({ file: paths.operator, reasonCode: 'CREDENTIAL_REFERENCE_INVALID', credentialName: name })
+      }
+    }
   }
   if (!boss.ok || !isRecord(boss.value)) {
     errors.push({ file: paths.boss, reasonCode: 'BOSS_CONFIG_INVALID' })
   }
   if (!llm.ok || (!Array.isArray(llm.value) && !isRecord(llm.value))) {
     errors.push({ file: paths.llm, reasonCode: 'LLM_CONFIG_INVALID' })
+  } else {
+    for (const [index, item] of llmEntries(llm.value).entries()) {
+      if (!isRecord(item)) continue
+      if (String(item.providerApiSecret ?? item.apiKey ?? '').trim()) {
+        errors.push({ file: paths.llm, reasonCode: 'LLM_PLAINTEXT_SECRET_FORBIDDEN', index })
+      }
+      if (item.credentialRef !== undefined && !parseWindowsCredentialReference(item.credentialRef)) {
+        errors.push({ file: paths.llm, reasonCode: 'CREDENTIAL_REFERENCE_INVALID', index })
+      }
+    }
   }
   return {
     ok: errors.length === 0,
@@ -113,6 +132,11 @@ function validateConfig (paths) {
     reasonCode: errors.length ? 'CONFIG_INVALID' : null,
     nextActions: errors.length ? ['Repair the listed JSON files or run ggr config init after backing them up'] : [],
   }
+}
+
+function llmEntries (value) {
+  if (Array.isArray(value)) return value
+  return Array.isArray(value?.configList) ? value.configList : []
 }
 
 function importDesktopConfig (paths, options, now) {
@@ -297,7 +321,7 @@ function publicPaths (paths) {
 function readJson (filePath) {
   if (!fs.existsSync(filePath)) return { ok: false, value: null }
   try {
-    return { ok: true, value: JSON.parse(fs.readFileSync(filePath, 'utf8')) }
+    return { ok: true, value: JSON.parse(fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '')) }
   } catch {
     return { ok: false, value: null }
   }

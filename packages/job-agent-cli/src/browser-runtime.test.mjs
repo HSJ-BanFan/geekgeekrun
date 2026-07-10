@@ -4,7 +4,12 @@ import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 
-import { acquireBrowserProfileLock, validateCdpEndpoint } from './browser-runtime.mjs'
+import {
+  acquireBrowserProfileLock,
+  connectToBrowserEndpoint,
+  releaseBrowserConnection,
+  validateCdpEndpoint,
+} from './browser-runtime.mjs'
 
 test('CDP validation accepts loopback endpoints and requires an explicit high-risk option for remote hosts', () => {
   assert.equal(validateCdpEndpoint('http://127.0.0.1:9222').connectionMode, 'loopback')
@@ -23,6 +28,49 @@ test('CDP validation accepts loopback endpoints and requires an explicit high-ri
     () => validateCdpEndpoint('https://user:secret@browser.example.com', { allowRemote: true }),
     error => error.reasonCode === 'CDP_ENDPOINT_CREDENTIALS_FORBIDDEN' && !error.message.includes('secret')
   )
+})
+
+test('browser connection cleanup closes owned browsers and only disconnects attached CDP browsers', async () => {
+  const calls = []
+  await releaseBrowserConnection({
+    shouldClose: true,
+    browser: {
+      async close () { calls.push('close') },
+      disconnect () { calls.push('unexpected-disconnect') },
+    },
+  })
+  await releaseBrowserConnection({
+    shouldClose: false,
+    browser: {
+      async close () { calls.push('unexpected-close') },
+      disconnect () { calls.push('disconnect') },
+    },
+  })
+
+  assert.deepEqual(calls, ['close', 'disconnect'])
+})
+
+test('shared CDP connection selects an existing BOSS page and reports the validated connection mode', async () => {
+  const bossPage = { url: () => 'https://www.zhipin.com/web/geek/jobs' }
+  const otherPage = { url: () => 'about:blank' }
+  const calls = []
+  const browser = {
+    async pages () { return [otherPage, bossPage] },
+  }
+  const connected = await connectToBrowserEndpoint({
+    cdpPort: '9222',
+    puppeteerImpl: {
+      async connect (options) {
+        calls.push(options)
+        return browser
+      },
+    },
+  })
+
+  assert.deepEqual(calls, [{ browserURL: 'http://127.0.0.1:9222/' }])
+  assert.equal(connected.page, bossPage)
+  assert.deepEqual(connected.connection, { mode: 'loopback', highRisk: false })
+  assert.equal(connected.shouldClose, false)
 })
 
 test('managed browser profile lock fails fast for a live owner and reclaims a stale lock', () => {

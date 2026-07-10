@@ -107,8 +107,8 @@ jobs:
         working-directory: packages/job-agent-sidecar
         run: python -m pytest
 
-  job-agent-portable-windows:
-    name: job-agent-distribution-windows
+  job-agent-distribution-build-windows:
+    name: job-agent-distribution-build-windows
     runs-on: windows-2022
     needs:
       - job-agent-cli
@@ -150,18 +150,40 @@ jobs:
       - name: Build per-user installer
         run: pnpm build:job-agent-installer
 
-      - name: Smoke-test install and uninstall lifecycle
+      - name: Download and verify pinned browser gate fixture
         shell: powershell
-        run: |
-          $installer = Get-ChildItem artifacts/job-agent-installer/*.exe | Select-Object -First 1
-          if (-not $installer) { throw "Job Agent installer was not built" }
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-test-job-agent-installer.ps1 -InstallerPath $installer.FullName
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/download-job-agent-browser-fixture.ps1
 
-      - name: Upload Windows distribution
+      - name: Upload Windows distribution candidate
         uses: actions/upload-artifact@v4
         with:
-          name: geekgeekrun-job-agent-windows-x64
+          name: geekgeekrun-job-agent-windows-x64-candidate
           path: |
             artifacts/job-agent-portable/*.zip
             artifacts/job-agent-installer/*.exe
+            artifacts/job-agent-browser-fixture/*.zip
           if-no-files-found: error
+
+  job-agent-installed-product-windows:
+    name: job-agent-distribution-windows
+    runs-on: windows-2022
+    needs:
+      - job-agent-distribution-build-windows
+    steps:
+      - name: Checkout installed-product test fixtures
+        uses: actions/checkout@v4
+
+      - name: Download Windows distribution candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: geekgeekrun-job-agent-windows-x64-candidate
+          path: artifacts
+
+      - name: Run isolated installed-product lifecycle gate
+        shell: powershell
+        run: |
+          $installer = Get-ChildItem artifacts -Recurse -Filter *.exe | Where-Object Name -like '*-setup.exe' | Select-Object -First 1
+          $browserArchive = Get-ChildItem artifacts -Recurse -Filter chrome-win64.zip | Select-Object -First 1
+          if (-not $installer) { throw "Job Agent installer candidate was not downloaded" }
+          if (-not $browserArchive) { throw "Pinned browser gate fixture was not downloaded" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-test-job-agent-installer.ps1 -InstallerPath $installer.FullName -BrowserArchivePath $browserArchive.FullName

@@ -16,6 +16,19 @@ function Invoke-Checked {
     }
 }
 
+function Get-Sha256 {
+    param([string]$Path)
+
+    $stream = [System.IO.File]::OpenRead($Path)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString($sha256.ComputeHash($stream))).Replace("-", "").ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Resolve-InnoCompiler {
     param([string]$ConfiguredCompiler)
 
@@ -78,7 +91,7 @@ $installerPath = Join-Path $outputRoot "geekgeekrun-job-agent-$distributionVersi
 if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
     throw "INSTALLER_BUILD_OUTPUT_MISSING: $installerPath"
 }
-$hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installerPath).Hash.ToLowerInvariant()
+$hash = Get-Sha256 -Path $installerPath
 
 [ordered]@{
     ok = $true

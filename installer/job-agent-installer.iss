@@ -39,7 +39,6 @@ SetupLogging=yes
 
 [Files]
 Source: "{#BundleRoot}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "cleanup-job-agent-credentials.ps1"; DestDir: "{app}\installer-support"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Uninstall {#ProductName}"; Filename: "{uninstallexe}"

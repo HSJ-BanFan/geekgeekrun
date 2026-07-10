@@ -2,7 +2,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { resolveCityCode } from './city-codes.mjs'
 import { getRuntimeContext } from './runtime-context.mjs'
-import { validateCdpEndpoint } from './browser-runtime.mjs'
+import {
+  connectToBrowserEndpoint,
+  releaseBrowserConnection,
+} from './browser-runtime.mjs'
 
 const commandName = 'market-jobs'
 const artifactSchemaVersion = 'market-jobs.v1'
@@ -97,7 +100,7 @@ export async function runMarketJobs ({
       })
       return { ...result, browserConnection: opened.connection }
     } finally {
-      if (opened.shouldClose) await opened.browser?.close?.().catch(() => {})
+      await releaseBrowserConnection(opened)
     }
   }
 
@@ -521,23 +524,8 @@ async function openMarketJobsBrowser ({
   cdpPort = '',
   allowRemoteCdp = false,
 } = {}) {
-  const endpoint = browserUrl || (cdpPort ? `http://127.0.0.1:${cdpPort}` : '')
-  if (endpoint) {
-    const validated = validateCdpEndpoint(endpoint, { allowRemote: allowRemoteCdp })
-    const { default: puppeteer } = await import('puppeteer')
-    const connectOptions = /^wss?:\/\//i.test(validated.endpoint)
-      ? { browserWSEndpoint: validated.endpoint }
-      : { browserURL: validated.endpoint }
-    const browser = await puppeteer.connect(connectOptions)
-    const pages = await browser.pages()
-    const page = pages.find(item => item.url?.().includes('zhipin.com')) ?? pages[0] ?? await browser.newPage()
-    return {
-      browser,
-      page,
-      shouldClose: false,
-      connection: { mode: validated.connectionMode, highRisk: validated.highRisk },
-    }
-  }
+  const connected = await connectToBrowserEndpoint({ browserUrl, cdpPort, allowRemoteCdp })
+  if (connected) return connected
   const { openBrowser } = await import('./browser-actions.mjs')
   return {
     ...(await openBrowser({ headless })),

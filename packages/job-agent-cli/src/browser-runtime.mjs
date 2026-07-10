@@ -33,6 +33,39 @@ export function validateCdpEndpoint (value, { allowRemote = false } = {}) {
   }
 }
 
+export async function connectToBrowserEndpoint ({
+  browserUrl = '',
+  cdpPort = '',
+  allowRemoteCdp = false,
+  puppeteerImpl = null,
+} = {}) {
+  const endpoint = browserUrl || (cdpPort ? `http://127.0.0.1:${cdpPort}` : '')
+  if (!endpoint) return null
+  const validated = validateCdpEndpoint(endpoint, { allowRemote: allowRemoteCdp })
+  const puppeteer = puppeteerImpl ?? (await import('puppeteer')).default
+  const connectOptions = /^wss?:\/\//i.test(validated.endpoint)
+    ? { browserWSEndpoint: validated.endpoint }
+    : { browserURL: validated.endpoint }
+  const browser = await puppeteer.connect(connectOptions)
+  const pages = await browser.pages()
+  const page = pages.find(item => item.url?.().includes('zhipin.com')) ?? pages[0] ?? await browser.newPage()
+  return {
+    browser,
+    page,
+    shouldClose: false,
+    connection: { mode: validated.connectionMode, highRisk: validated.highRisk },
+  }
+}
+
+export async function releaseBrowserConnection (opened) {
+  if (!opened?.browser) return
+  if (opened.shouldClose) {
+    await opened.browser.close?.().catch(() => {})
+    return
+  }
+  opened.browser.disconnect?.()
+}
+
 export function acquireBrowserProfileLock (runtimeContext, {
   pid = process.pid,
   now = new Date(),

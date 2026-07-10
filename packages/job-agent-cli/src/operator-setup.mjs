@@ -16,6 +16,7 @@ export async function runSetupCommand (runtimeContext, args, {
   waitForEnter = defaultWaitForEnter,
   fetchImpl = fetch,
   spawnSyncImpl = spawnSync,
+  browserMetadataPath = defaultMetadataPath,
 } = {}) {
   const action = args[0] && !args[0].startsWith('--') ? args[0] : 'provision'
   const optionArgs = action === 'provision' ? args : args.slice(1)
@@ -29,7 +30,13 @@ export async function runSetupCommand (runtimeContext, args, {
     throw setupError('SETUP_ACTION_UNSUPPORTED', `Unsupported setup action: ${action}`)
   }
 
-  const metadata = readMetadata(options['browser-metadata'])
+  if (runtimeContext.mode === 'installed' && options['browser-metadata']) {
+    throw setupError(
+      'BROWSER_METADATA_OVERRIDE_FORBIDDEN',
+      'Installed setup always uses the browser metadata shipped in the verified installation'
+    )
+  }
+  const metadata = readMetadata(options['browser-metadata'] || browserMetadataPath)
   const setupLock = acquireBrowserProfileLock(runtimeContext)
   let browser
   try {
@@ -211,26 +218,81 @@ async function completeManualLogin (runtimeContext, { writeProgress, waitForEnte
     await waitForEnter('After login is complete, press Enter to verify the session: ')
     const state = await opened.page.evaluate(() => ({
       url: location.href,
+      title: document.title ?? '',
       visibleText: (document.body?.innerText ?? '').slice(0, 1200),
-    })).catch(() => ({ url: opened.page.url?.() ?? '', visibleText: '' }))
-    const ready = !/登录\/注册|请登录|扫码登录|验证码登录|登录后继续/.test(`${state.url}\n${state.visibleText}`)
+      hasLoginControl: Boolean(document.querySelector(
+        '[ka="header-login"], .header-login-btn, .btn-login, a[href*="ka=header-login"]'
+      )),
+      hasAuthenticatedNavigation: Boolean(document.querySelector(
+        '[ka="header-personal"], [ka="header-resume"], [ka="header-geek"], [class*="user-nav"], [class*="geek-avatar"]'
+      )),
+      hasGeekWorkspace: Boolean(document.querySelector(
+        '.page-jobs-main, .recommend-job-list, .user-list-content, .chat-conversation, [class*="geek-center"]'
+      )),
+    })).catch(() => ({ url: opened.page.url?.() ?? '', title: '', visibleText: '' }))
+    const classification = classifyBossSessionState(state)
     const session = {
       schemaVersion: 'job-agent-boss-session-status.v1',
-      status: ready ? 'ready' : 'login-required',
+      status: classification.status,
       checkedAt: new Date().toISOString(),
       origin: safeOrigin(state.url),
     }
     writeJsonAtomic(path.join(runtimeContext.browserRoot, 'session.json'), session)
     return {
-      ok: ready,
+      ok: classification.status === 'ready',
       command: 'setup',
       session,
-      reasonCode: ready ? null : 'BOSS_LOGIN_REQUIRED',
-      nextActions: ready ? ['ggr doctor --require-browser'] : ['Complete login and run ggr setup login again'],
+      reasonCode: classification.reasonCode,
+      nextActions: loginNextActions(classification.status),
     }
   } finally {
     await opened.browser.close().catch(() => {})
   }
+}
+
+export function classifyBossSessionState ({
+  url = '',
+  title = '',
+  visibleText = '',
+  hasLoginControl = false,
+  hasAuthenticatedNavigation = false,
+  hasGeekWorkspace = false,
+} = {}) {
+  const haystack = `${url}\n${title}\n${visibleText}`
+  if (/安全验证|验证后继续|拖动滑块|人机验证|security-check|captcha|verify/i.test(haystack)) {
+    return { status: 'safety-verification', reasonCode: 'BOSS_SAFETY_VERIFICATION_REQUIRED' }
+  }
+  if (/环境异常|访问异常|网络错误|页面加载失败|无法访问此网站|chrome-error|ERR_[A-Z_]+/i.test(haystack)) {
+    return { status: 'abnormal-environment', reasonCode: 'BOSS_ABNORMAL_ENVIRONMENT' }
+  }
+  if (hasLoginControl || /登录\/注册|请登录|扫码登录|验证码登录|登录后继续/.test(haystack)) {
+    return { status: 'login-required', reasonCode: 'BOSS_LOGIN_REQUIRED' }
+  }
+
+  let parsedUrl
+  try {
+    parsedUrl = new URL(url)
+  } catch {
+    return { status: 'abnormal-environment', reasonCode: 'BOSS_ABNORMAL_ENVIRONMENT' }
+  }
+  if (parsedUrl.origin !== 'https://www.zhipin.com') {
+    return { status: 'abnormal-environment', reasonCode: 'BOSS_ABNORMAL_ENVIRONMENT' }
+  }
+  if (!/^\/web\/(?:geek|user)(?:\/|$)/.test(parsedUrl.pathname)) {
+    return { status: 'unconfirmed', reasonCode: 'BOSS_SESSION_UNCONFIRMED' }
+  }
+  if (!hasAuthenticatedNavigation && !hasGeekWorkspace) {
+    return { status: 'unconfirmed', reasonCode: 'BOSS_SESSION_UNCONFIRMED' }
+  }
+  return { status: 'ready', reasonCode: null }
+}
+
+function loginNextActions (status) {
+  if (status === 'ready') return ['ggr doctor --require-browser']
+  if (status === 'login-required') return ['Complete login and run ggr setup login again']
+  if (status === 'safety-verification') return ['Complete the visible BOSS safety verification manually, then run ggr setup login again']
+  if (status === 'abnormal-environment') return ['Check browser/network health, then run ggr setup login again']
+  return ['Open a supported BOSS geek page in the managed browser, confirm login, then run ggr setup login again']
 }
 
 function resetProfile (runtimeContext, options) {

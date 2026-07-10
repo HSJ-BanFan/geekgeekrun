@@ -204,6 +204,11 @@ try {
     New-Item -ItemType Directory -Force -Path $sidecarRoot | Out-Null
     Copy-Item -LiteralPath (Join-Path $sidecarDistRoot "ggr-sidecar.exe") -Destination (Join-Path $sidecarRoot "ggr-sidecar.exe")
 
+    $installerSupportRoot = Join-Path $bundleRoot "installer-support"
+    New-Item -ItemType Directory -Force -Path $installerSupportRoot | Out-Null
+    Copy-Item -LiteralPath (Join-Path $repoRoot "installer\cleanup-job-agent-credentials.ps1") `
+        -Destination (Join-Path $installerSupportRoot "cleanup-job-agent-credentials.ps1")
+
     Invoke-Checked -Executable "node" -Arguments @(
         (Join-Path $repoRoot "scripts\job-agent-portable.mjs"),
         "--bundle-root", $bundleRoot,

@@ -67,11 +67,13 @@ export function finalizePortableBundle ({
     sidecar: 'sidecar/ggr-sidecar.exe',
     ggrLauncher: 'ggr.cmd',
     sidecarLauncher: 'ggr-sidecar.cmd',
+    credentialCleanup: 'installer-support/cleanup-job-agent-credentials.ps1',
   }
 
   requireFile(resolvedBundleRoot, componentPaths.nodeRuntime)
   requireFile(resolvedBundleRoot, componentPaths.nodeCli)
   requireFile(resolvedBundleRoot, componentPaths.sidecar)
+  requireFile(resolvedBundleRoot, componentPaths.credentialCleanup)
   fs.writeFileSync(
     path.join(resolvedBundleRoot, componentPaths.ggrLauncher),
     launcherText('runtime\\node.exe', 'app\\bin\\ggr.mjs'),
@@ -110,6 +112,11 @@ export function finalizePortableBundle ({
     sidecarLauncher: componentRecord({
       bundleRoot: resolvedBundleRoot,
       relativePath: componentPaths.sidecarLauncher,
+      distributionVersion,
+    }),
+    credentialCleanup: componentRecord({
+      bundleRoot: resolvedBundleRoot,
+      relativePath: componentPaths.credentialCleanup,
       distributionVersion,
     }),
   }

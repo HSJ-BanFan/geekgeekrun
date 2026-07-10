@@ -6,7 +6,10 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { test } from 'node:test'
 
-import { runSetupCommand } from './operator-setup.mjs'
+import {
+  classifyBossSessionState,
+  runSetupCommand,
+} from './operator-setup.mjs'
 
 test('offline managed-browser setup verifies metadata, preserves the profile on repair, and leaves a healthy install intact on mismatch', async () => {
   const runtimeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ggr-browser-setup-'))
@@ -25,9 +28,8 @@ test('offline managed-browser setup verifies metadata, preserves the profile on 
   try {
     const first = await runSetupCommand(runtimeContext, [
       '--offline-archive', archivePath,
-      '--browser-metadata', metadataPath,
       '--skip-login',
-    ], { writeProgress: () => {} })
+    ], { writeProgress: () => {}, browserMetadataPath: metadataPath })
 
     assert.equal(first.ok, true)
     assert.equal(first.browser.selectionMode, 'managed')
@@ -41,9 +43,8 @@ test('offline managed-browser setup verifies metadata, preserves the profile on 
     const repaired = await runSetupCommand(runtimeContext, [
       'repair',
       '--offline-archive', archivePath,
-      '--browser-metadata', metadataPath,
       '--skip-login',
-    ], { writeProgress: () => {} })
+    ], { writeProgress: () => {}, browserMetadataPath: metadataPath })
 
     assert.equal(repaired.ok, true)
     assert.equal(fs.readFileSync(profileMarker, 'utf8'), 'preserve-session-profile')
@@ -55,9 +56,8 @@ test('offline managed-browser setup verifies metadata, preserves the profile on 
       runSetupCommand(runtimeContext, [
         'repair',
         '--offline-archive', archivePath,
-        '--browser-metadata', metadataPath,
         '--skip-login',
-      ], { writeProgress: () => {} }),
+      ], { writeProgress: () => {}, browserMetadataPath: metadataPath }),
       error => error.reasonCode === 'BROWSER_ARCHIVE_HASH_MISMATCH'
     )
     assert.equal(fs.readFileSync(path.join(runtimeContext.browserRoot, 'browser.json'), 'utf8'), previousConfiguration)
@@ -108,10 +108,10 @@ test('online managed-browser setup downloads only the pinned metadata URL and ve
 
   try {
     const result = await runSetupCommand(context(runtimeHome), [
-      '--browser-metadata', metadataPath,
       '--skip-login',
     ], {
       writeProgress: () => {},
+      browserMetadataPath: metadataPath,
       fetchImpl: async url => {
         requested.push(url)
         return new Response(fs.readFileSync(archivePath), { status: 200 })
@@ -125,6 +125,48 @@ test('online managed-browser setup downloads only the pinned metadata URL and ve
   } finally {
     fs.rmSync(runtimeHome, { recursive: true, force: true })
   }
+})
+
+test('installed setup rejects public browser metadata replacement', async () => {
+  const runtimeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ggr-browser-metadata-'))
+  try {
+    await assert.rejects(
+      runSetupCommand(context(runtimeHome), ['--browser-metadata', 'attacker-controlled.json', '--skip-login']),
+      error => error.reasonCode === 'BROWSER_METADATA_OVERRIDE_FORBIDDEN'
+    )
+  } finally {
+    fs.rmSync(runtimeHome, { recursive: true, force: true })
+  }
+})
+
+test('manual login classification requires a supported BOSS geek page and positive authenticated DOM evidence', () => {
+  assert.deepEqual(classifyBossSessionState({
+    url: 'https://www.zhipin.com/web/geek/jobs',
+    visibleText: 'AI Agent 工程师',
+    hasAuthenticatedNavigation: true,
+  }), { status: 'ready', reasonCode: null })
+
+  assert.equal(classifyBossSessionState({
+    url: 'https://www.zhipin.com/web/geek/jobs',
+    visibleText: '扫码登录后继续',
+    hasLoginControl: true,
+  }).status, 'login-required')
+  assert.equal(classifyBossSessionState({
+    url: 'https://www.zhipin.com/web/common/security-check',
+    visibleText: '请拖动滑块完成安全验证',
+  }).status, 'safety-verification')
+  assert.equal(classifyBossSessionState({
+    url: 'chrome-error://chromewebdata/',
+    title: '无法访问此网站',
+  }).status, 'abnormal-environment')
+  assert.equal(classifyBossSessionState({
+    url: 'https://www.zhipin.com/web/geek/jobs',
+    visibleText: '普通空白内容',
+  }).status, 'unconfirmed')
+  assert.equal(classifyBossSessionState({
+    url: 'https://example.com/web/geek/jobs',
+    hasGeekWorkspace: true,
+  }).status, 'abnormal-environment')
 })
 
 function context (runtimeHome) {

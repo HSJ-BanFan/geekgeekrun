@@ -33,3 +33,4 @@ database.sqlite
 artifacts/job-agent-portable/
 artifacts/job-agent-portable-repro*/
 artifacts/job-agent-installer/
+artifacts/job-agent-browser-fixture/

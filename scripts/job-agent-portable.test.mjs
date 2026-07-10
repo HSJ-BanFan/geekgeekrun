@@ -137,6 +137,12 @@ test('portable finalization writes launchers and integrity-verifiable component 
         runtimeVersion: undefined,
         hasHash: true,
       },
+      credentialCleanup: {
+        path: 'installer-support/cleanup-job-agent-credentials.ps1',
+        distributionVersion: '0.1.0',
+        runtimeVersion: undefined,
+        hasHash: true,
+      },
     }
   )
   assert.ok(manifest.integrity.files.length >= 5)
@@ -249,10 +255,12 @@ function portableFixture () {
   const cliPath = path.join(bundleRoot, 'app', 'bin', 'ggr.mjs')
   const toolCliPath = path.join(bundleRoot, 'app', 'bin', 'ggr-main.mjs')
   const sidecarPath = path.join(bundleRoot, 'sidecar', 'ggr-sidecar.exe')
+  const credentialCleanupPath = path.join(bundleRoot, 'installer-support', 'cleanup-job-agent-credentials.ps1')
 
   fs.mkdirSync(path.dirname(nodeRuntimePath), { recursive: true })
   fs.mkdirSync(path.dirname(cliPath), { recursive: true })
   fs.mkdirSync(path.dirname(sidecarPath), { recursive: true })
+  fs.mkdirSync(path.dirname(credentialCleanupPath), { recursive: true })
   fs.copyFileSync(process.execPath, nodeRuntimePath)
   fs.writeFileSync(
     cliPath,
@@ -269,6 +277,7 @@ function portableFixture () {
   )
   fs.writeFileSync(toolCliPath, 'process.stdout.write("tool fixture\\n")\n')
   fs.copyFileSync(process.execPath, sidecarPath)
+  fs.writeFileSync(credentialCleanupPath, 'param([string]$InstallRoot)\n')
   fs.writeFileSync(
     metadataPath,
     JSON.stringify({

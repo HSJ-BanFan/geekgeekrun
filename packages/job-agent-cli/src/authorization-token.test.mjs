@@ -174,10 +174,10 @@ test('CLI can issue and inspect authorization tokens as JSON', async () => {
     const finalDecisionFile = path.join(tempDir, 'final-decision.json')
     const ruleEvaluationFile = path.join(tempDir, 'rule-evaluation.json')
     const llmEvaluationFile = path.join(tempDir, 'llm-evaluation.json')
-    fs.writeFileSync(jobFile, JSON.stringify(sensitiveJob()))
-    fs.writeFileSync(finalDecisionFile, JSON.stringify(llmApplyDecision()))
-    fs.writeFileSync(ruleEvaluationFile, JSON.stringify(sensitiveRuleEvaluation()))
-    fs.writeFileSync(llmEvaluationFile, JSON.stringify(sensitiveLlmEvaluation()))
+    fs.writeFileSync(jobFile, `\uFEFF${JSON.stringify(sensitiveJob())}`)
+    fs.writeFileSync(finalDecisionFile, `\uFEFF${JSON.stringify(llmApplyDecision())}`)
+    fs.writeFileSync(ruleEvaluationFile, `\uFEFF${JSON.stringify(sensitiveRuleEvaluation())}`)
+    fs.writeFileSync(llmEvaluationFile, `\uFEFF${JSON.stringify(sensitiveLlmEvaluation())}`)
 
     const issueOutput = JSON.parse((await runGgr([
       'authorization-token',

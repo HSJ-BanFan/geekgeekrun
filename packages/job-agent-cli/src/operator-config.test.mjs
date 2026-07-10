@@ -64,6 +64,36 @@ test('config secret set rejects secret values supplied as command-line options',
   }
 })
 
+test('config validation rejects plaintext LLM secrets and credential references outside the product namespace', async () => {
+  const runtimeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ggr-operator-config-'))
+  const runtime = runtimeContext(runtimeHome)
+
+  try {
+    await runConfigCommand(runtime, ['init'])
+    fs.writeFileSync(path.join(runtimeHome, 'config', 'llm.json'), `\uFEFF${JSON.stringify([{
+      enabled: true,
+      providerCompleteApiUrl: 'https://example.invalid/v1/chat/completions',
+      model: 'fixture-model',
+      apiKey: 'PLAINTEXT_SECRET_MUST_BE_REJECTED',
+      credentialRef: 'windows-credential:OtherProduct/secret',
+    }])}`)
+    const operatorPath = path.join(runtimeHome, 'config', 'operator.json')
+    const operator = JSON.parse(fs.readFileSync(operatorPath, 'utf8'))
+    operator.credentials.bad = 'windows-credential:OtherProduct/secret'
+    fs.writeFileSync(operatorPath, `\uFEFF${JSON.stringify(operator)}`)
+
+    const result = await runConfigCommand(runtime, ['validate'])
+
+    assert.equal(result.ok, false)
+    assert.equal(result.reasonCode, 'CONFIG_INVALID')
+    assert.ok(result.errors.some(error => error.reasonCode === 'LLM_PLAINTEXT_SECRET_FORBIDDEN'))
+    assert.ok(result.errors.some(error => error.reasonCode === 'CREDENTIAL_REFERENCE_INVALID'))
+    assert.doesNotMatch(JSON.stringify(result), /PLAINTEXT_SECRET_MUST_BE_REJECTED/)
+  } finally {
+    fs.rmSync(runtimeHome, { recursive: true, force: true })
+  }
+})
+
 function runtimeContext (runtimeHome) {
   return {
     mode: 'installed',

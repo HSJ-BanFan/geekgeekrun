@@ -1,7 +1,10 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { getRuntimeContext } from './runtime-context.mjs'
-import { createWindowsCredentialStore } from './credential-store.mjs'
+import {
+  createWindowsCredentialStore,
+  parseWindowsCredentialReference,
+} from './credential-store.mjs'
 
 const initialRuntimeContext = getRuntimeContext()
 const sourceRuntimeFiles = initialRuntimeContext.mode === 'source'
@@ -122,36 +125,36 @@ export function getEnabledLlmConfig (llmConfig) {
 function readJsonIfPresent (filePath, fallback) {
   if (!fs.existsSync(filePath)) return fallback
   try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'))
+    return JSON.parse(fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, ''))
   } catch {
     return fallback
   }
 }
 
-function resolveInstalledLlmSecrets (llmConfig, operatorConfig) {
+export function resolveInstalledLlmSecrets (llmConfig, operatorConfig, {
+  credentialStore = createWindowsCredentialStore(),
+} = {}) {
   const credentialRefs = isRecord(operatorConfig?.credentials) ? operatorConfig.credentials : {}
-  const availableRefs = Object.values(credentialRefs).filter(value => typeof value === 'string')
-  if (!availableRefs.length) return llmConfig
-  const store = createWindowsCredentialStore()
+  const availableTargets = Object.values(credentialRefs)
+    .map(parseWindowsCredentialReference)
+    .filter(Boolean)
   const list = Array.isArray(llmConfig)
     ? llmConfig
     : Array.isArray(llmConfig?.configList)
       ? llmConfig.configList
       : []
   const resolved = list.map(item => {
-    if (!isRecord(item) || item.providerApiSecret || item.apiKey) return item
+    if (!isRecord(item)) return item
+    const { providerApiSecret, apiKey, ...safeItem } = item
     const credentialName = String(item.credentialName ?? '').trim()
-    const credentialRef = String(
+    const target = parseWindowsCredentialReference(
       item.credentialRef ??
       (credentialName ? credentialRefs[credentialName] : '') ??
-      (availableRefs.length === 1 ? availableRefs[0] : '')
-    ).trim()
-    const target = credentialRef.startsWith('windows-credential:')
-      ? credentialRef.slice('windows-credential:'.length)
-      : ''
-    if (!target) return item
-    const result = store.get({ target })
-    return result.ok ? { ...item, providerApiSecret: result.secret } : item
+      (availableTargets.length === 1 ? `windows-credential:${availableTargets[0]}` : '')
+    )
+    if (!target) return safeItem
+    const result = credentialStore.get({ target })
+    return result.ok ? { ...safeItem, providerApiSecret: result.secret } : safeItem
   })
   return Array.isArray(llmConfig) ? resolved : { ...llmConfig, configList: resolved }
 }

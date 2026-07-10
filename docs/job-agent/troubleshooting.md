@@ -20,12 +20,14 @@ ggr config validate
 - `BROWSER_ARCHIVE_HASH_MISMATCH`: the archive is wrong, incomplete, or modified. Existing browser files/profile are preserved.
 - `BROWSER_ARCHIVE_LAYOUT_INVALID`: use the official Chrome for Testing win64 archive named by the release.
 - `BROWSER_VERSION_UNSUPPORTED`: select a browser matching the supported major version. Automatic detection does not override the baseline.
+- `BROWSER_METADATA_OVERRIDE_FORBIDDEN`: installed setup always trusts the browser metadata shipped in the integrity-verified installation; use the exact supported archive instead of replacement metadata.
 - `BROWSER_EXECUTABLE_MISSING`: run `ggr setup repair`; repair preserves the browser profile.
 
 ## Login and profile state
 
 - `INTERACTIVE_LOGIN_REQUIRED`: run `ggr setup login` in a real terminal, not redirected CI input.
 - `BOSS_SESSION_NOT_READY`, `BOSS_LOGIN_REQUIRED`: complete BOSS login manually in the visible managed browser.
+- `BOSS_SESSION_UNCONFIRMED`: open a supported BOSS geek page and confirm that authenticated navigation/workspace controls are visible, then rerun `ggr setup login`.
 - `BOSS_SAFETY_VERIFICATION_REQUIRED`, `BOSS_ABNORMAL_ENVIRONMENT`: stop and complete the platform's visible safety process yourself. The CLI does not bypass verification.
 - `BROWSER_PROFILE_IN_USE`: another managed browser command owns the profile. Let it finish; offline planning and artifact analysis remain available.
 - `PROFILE_RESET_CONFIRMATION_REQUIRED`: profile reset logs the managed session out and requires `ggr setup reset-profile --confirm`.
@@ -42,6 +44,8 @@ The normal setup path never accepts passwords or Cookie values and never prints 
 
 - `CONFIG_NOT_INITIALIZED`: run `ggr config init`.
 - `CONFIG_INVALID`: inspect the listed file and reason code; paths are available from `ggr config path`.
+- `LLM_PLAINTEXT_SECRET_FORBIDDEN`: remove `apiKey` or `providerApiSecret` from `llm.json` and use `ggr config secret set --name <name>`.
+- `CREDENTIAL_REFERENCE_INVALID`, `CREDENTIAL_TARGET_INVALID`: use only references created by `ggr config secret`; valid targets stay under `GeekGeekRun/JobAgent/<name>`.
 - `INTERACTIVE_SECRET_REQUIRED`: run `ggr config secret set --name <name>` interactively.
 - `CREDENTIAL_STORE_UNAVAILABLE`, `CREDENTIAL_STORE_OPERATION_FAILED`: verify the intended Windows user and Windows Credential Manager availability.
 - Missing advanced LLM configuration does not block setup, doctor, plan-only, or read-only market sampling.

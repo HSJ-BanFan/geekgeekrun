@@ -23,5 +23,8 @@ foreach ($property in @($credentials.PSObject.Properties)) {
         continue
     }
     $target = $reference.Substring("windows-credential:".Length)
+    if ($target -notmatch '^GeekGeekRun/JobAgent/[A-Za-z0-9._-]+$') {
+        continue
+    }
     & $helperPath -Action delete -Target $target | Out-Null
 }

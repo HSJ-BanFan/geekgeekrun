@@ -3,6 +3,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const helperPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'windows-credential.ps1')
+const credentialTargetPattern = /^GeekGeekRun\/JobAgent\/[A-Za-z0-9._-]+$/
 
 export function createWindowsCredentialStore ({
   platform = process.platform,
@@ -40,6 +41,12 @@ export function createWindowsCredentialStore ({
 }
 
 function invokeHelper ({ action, target, secret = '', spawnSyncImpl }) {
+  if (!['set', 'get', 'exists', 'delete'].includes(action)) {
+    return { ok: false, exists: false, reasonCode: 'CREDENTIAL_ACTION_INVALID' }
+  }
+  if (!isValidWindowsCredentialTarget(target)) {
+    return { ok: false, exists: false, reasonCode: 'CREDENTIAL_TARGET_INVALID' }
+  }
   const powershellPath = path.join(
     process.env.SystemRoot || 'C:\\Windows',
     'System32',
@@ -47,20 +54,17 @@ function invokeHelper ({ action, target, secret = '', spawnSyncImpl }) {
     'v1.0',
     'powershell.exe'
   )
-  const command = [
-    `"${powershellPath}"`,
+  const completed = spawnSyncImpl(powershellPath, [
     '-NoProfile',
     '-NonInteractive',
-    '-ExecutionPolicy Bypass',
-    `-File "${helperPath}"`,
-    `-Action ${action}`,
-    `-Target "${target}"`,
-  ].join(' ')
-  const completed = spawnSyncImpl('cmd.exe', ['/d', '/s', '/c', `"${command}"`], {
+    '-ExecutionPolicy', 'Bypass',
+    '-File', helperPath,
+    '-Action', action,
+    '-Target', target,
+  ], {
     input: secret,
     encoding: 'utf8',
     windowsHide: true,
-    windowsVerbatimArguments: true,
     maxBuffer: 1024 * 1024,
   })
   const parsed = parseResponse(completed.stdout)
@@ -72,6 +76,17 @@ function invokeHelper ({ action, target, secret = '', spawnSyncImpl }) {
     exists: parsed?.exists ?? false,
     reasonCode: parsed?.reasonCode ?? 'CREDENTIAL_STORE_OPERATION_FAILED',
   }
+}
+
+export function isValidWindowsCredentialTarget (value) {
+  return credentialTargetPattern.test(String(value ?? ''))
+}
+
+export function parseWindowsCredentialReference (value) {
+  const reference = String(value ?? '').trim()
+  if (!reference.startsWith('windows-credential:')) return null
+  const target = reference.slice('windows-credential:'.length)
+  return isValidWindowsCredentialTarget(target) ? target : null
 }
 
 function parseResponse (value) {

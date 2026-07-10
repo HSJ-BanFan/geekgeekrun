@@ -848,7 +848,7 @@ async function runBatch (argv) {
 
 async function readJobFromArgs (argv) {
   if (argv.job) {
-    return normalizeJobProfile(JSON.parse(fs.readFileSync(argv.job, 'utf8')))
+    return normalizeJobProfile(readJsonFile(argv.job))
   }
   return normalizeJobProfile({
     title: argv.title ?? '',
@@ -860,7 +860,7 @@ async function readJobFromArgs (argv) {
 }
 
 function readJsonFile (filePath) {
-  return JSON.parse(fs.readFileSync(filePath, 'utf8'))
+  return JSON.parse(fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, ''))
 }
 
 function browserJobSourceOptions (argv) {

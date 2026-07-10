@@ -1,9 +1,11 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import puppeteer from 'puppeteer'
 import { openBrowser } from './browser-actions.mjs'
 import { getRuntimeContext } from './runtime-context.mjs'
-import { validateCdpEndpoint } from './browser-runtime.mjs'
+import {
+  connectToBrowserEndpoint,
+  releaseBrowserConnection,
+} from './browser-runtime.mjs'
 
 const chatPageUrl = 'https://www.zhipin.com/web/geek/chat'
 const artifactSchemaVersion = 'recent-applications.v1'
@@ -33,7 +35,7 @@ export async function runRecentApplications ({
   }
 
   const opened = await openRecentApplicationsBrowser({ headless, browserUrl, cdpPort, allowRemoteCdp })
-  try {
+    try {
     const result = await runRecentApplicationsOnOpenPage(opened.page, {
       limit,
       includeJd,
@@ -42,10 +44,10 @@ export async function runRecentApplications ({
       analysisOutputPath,
       now,
     })
-    return { ...result, browserConnection: opened.connection }
-  } finally {
-    if (opened.shouldClose) await opened.browser?.close?.().catch(() => {})
-  }
+      return { ...result, browserConnection: opened.connection }
+    } finally {
+      await releaseBrowserConnection(opened)
+    }
 }
 
 export async function runRecentApplicationsOnOpenPage (page, {
@@ -353,22 +355,8 @@ async function openRecentApplicationsBrowser ({
   cdpPort = '',
   allowRemoteCdp = false,
 } = {}) {
-  const endpoint = browserUrl || (cdpPort ? `http://127.0.0.1:${cdpPort}` : '')
-  if (endpoint) {
-    const validated = validateCdpEndpoint(endpoint, { allowRemote: allowRemoteCdp })
-    const connectOptions = /^wss?:\/\//i.test(validated.endpoint)
-      ? { browserWSEndpoint: validated.endpoint }
-      : { browserURL: validated.endpoint }
-    const browser = await puppeteer.connect(connectOptions)
-    const pages = await browser.pages()
-    const page = pages.find(item => item.url?.().includes('zhipin.com')) ?? pages[0] ?? await browser.newPage()
-    return {
-      browser,
-      page,
-      shouldClose: false,
-      connection: { mode: validated.connectionMode, highRisk: validated.highRisk },
-    }
-  }
+  const connected = await connectToBrowserEndpoint({ browserUrl, cdpPort, allowRemoteCdp })
+  if (connected) return connected
   return {
     ...(await openBrowser({ headless })),
     shouldClose: true,

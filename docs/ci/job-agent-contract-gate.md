@@ -26,7 +26,8 @@ The gate covers deterministic contract and safety checks only:
 
 - `@geekgeekrun/job-agent-cli` syntax checks and tests on Node `20.16.0` with the pnpm version pinned by the root `packageManager` field.
 - `packages/job-agent-sidecar` tests on Python `3.11`.
-- A Windows x64 portable build and per-user installer with controlled Node `20.16.0`, a frozen Python `3.11` sidecar, manifest integrity verification, PATH validation, browser-fixture provisioning, public-launcher smoke tests, and privacy-first uninstall checks.
+- A Windows x64 portable build and per-user installer with controlled Node `20.16.0` and a frozen Python `3.11` sidecar.
+- A separate installed-product job that downloads the built installer and a build-job-verified pinned browser archive without setting up Node, Python, pnpm, or pip; constrains `PATH` to the installation plus System32; verifies those external toolchains are absent; and exercises manifest integrity, plan-only JSON, sidecar dispatch, offline browser import from the local fixture, controlled Market/Recent browser captures, authorization dry-run safety, and privacy-first uninstall through public launchers.
 - Relevant workspace dependencies that can affect the CLI contract.
 
-The gate intentionally excludes live BOSS login state, real browser actions, UI release builds, and operator-only workflows.
+The gate intentionally excludes live BOSS login state, live BOSS network access, real external application actions, UI release builds, and operator-only workflows. Browser command coverage uses locally intercepted fixture pages and performs read-only navigation only.
