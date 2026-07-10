@@ -1,0 +1,11 @@
+altgraph==0.17.5
+annotated-types==0.7.0
+packaging==26.2
+pefile==2023.2.7
+pydantic==2.13.4
+pydantic-core==2.46.4
+pyinstaller==6.14.2
+pyinstaller-hooks-contrib==2026.6
+pywin32-ctypes==0.2.3
+typing-extensions==4.16.0
+typing-inspection==0.4.2

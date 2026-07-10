@@ -155,6 +155,30 @@ test('ggr doctor reports a stable installation failure when a declared component
   })
 })
 
+test('ggr doctor verifies non-entrypoint files declared by the portable installation manifest', async () => {
+  await withInstalledFixture(async ({ cwd, env, installRoot, manifestPath }) => {
+    const dependencyPath = path.join(installRoot, 'app', 'src', 'portable-dependency.mjs')
+    fs.mkdirSync(path.dirname(dependencyPath), { recursive: true })
+    fs.writeFileSync(dependencyPath, 'export const portable = true\n')
+    addManifestIntegrityFile({ installRoot, manifestPath, filePath: dependencyPath })
+    fs.appendFileSync(dependencyPath, 'tampered\n')
+
+    await assert.rejects(
+      runGgr(['doctor'], { cwd, env }),
+      error => {
+        const output = JSON.parse(error.stdout)
+        assert.equal(output.ok, false)
+        assert.equal(output.checks.installation.reasonCode, 'INSTALLATION_INTEGRITY_FAILED')
+        assert.equal(
+          output.checks.installation.integrityChecks['app/src/portable-dependency.mjs'].reasonCode,
+          'COMPONENT_HASH_MISMATCH'
+        )
+        return true
+      }
+    )
+  })
+})
+
 test('installed version and doctor return JSON failures for a structurally invalid manifest', async () => {
   await withInstalledFixture(async ({ cwd, env, manifestPath }) => {
     fs.writeFileSync(manifestPath, 'null\n')
@@ -373,6 +397,15 @@ function componentRecord (installRoot, filePath) {
 function updateManifestComponent ({ installRoot, manifestPath, name, filePath }) {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
   manifest.components[name] = componentRecord(installRoot, filePath)
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2))
+}
+
+function addManifestIntegrityFile ({ installRoot, manifestPath, filePath }) {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+  manifest.integrity = {
+    algorithm: 'sha256',
+    files: [componentRecord(installRoot, filePath)],
+  }
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2))
 }
 

@@ -3,10 +3,16 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tomllib
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Mapping
+
+try:
+    from ggr_sidecar_build_version import DISTRIBUTION_VERSION as FROZEN_DISTRIBUTION_VERSION
+except ImportError:
+    FROZEN_DISTRIBUTION_VERSION = None
 
 INSTALLATION_MANIFEST_SCHEMA = "job-agent-installation-manifest.v1"
 EXPECTED_CONTRACTS = {
@@ -223,7 +229,17 @@ def sidecar_version() -> str:
     try:
         return version("geekgeekrun-job-agent-sidecar")
     except PackageNotFoundError:
-        return "0.1.0"
+        return FROZEN_DISTRIBUTION_VERSION or _source_distribution_version()
+
+
+def _source_distribution_version() -> str:
+    pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    try:
+        pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+        source_version = pyproject.get("project", {}).get("version")
+        return source_version if isinstance(source_version, str) else "0+unknown"
+    except (OSError, tomllib.TOMLDecodeError):
+        return "0+unknown"
 
 
 def _contains_expected_values(actual, expected: dict) -> bool:

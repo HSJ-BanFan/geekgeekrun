@@ -3,10 +3,15 @@ lockfileVersion: '9.0'
 settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
+  injectWorkspacePackages: true
 
 patchedDependencies:
-  find-chrome-bin@2.0.4: 47f6ad4cc334f79d11977f752e8cc3eee2619446c97e2105a5d9e3600d179035
-  puppeteer-extra-plugin-anonymize-ua@2.4.6: cdca73afa2dff574cd3df5dbf84650e003e41e47d906baa15023a67aa58c9cd2
+  find-chrome-bin@2.0.4:
+    hash: 47f6ad4cc334f79d11977f752e8cc3eee2619446c97e2105a5d9e3600d179035
+    path: patches/find-chrome-bin@2.0.4.patch
+  puppeteer-extra-plugin-anonymize-ua@2.4.6:
+    hash: cdca73afa2dff574cd3df5dbf84650e003e41e47d906baa15023a67aa58c9cd2
+    path: patches/puppeteer-extra-plugin-anonymize-ua@2.4.6.patch
 
 importers:
 
@@ -14,7 +19,7 @@ importers:
     dependencies:
       '@geekgeekrun/puppeteer-extra-plugin-laodeng':
         specifier: workspace:*
-        version: link:packages/laodeng
+        version: file:packages/laodeng(playwright-extra@4.3.6)(puppeteer-extra@3.3.6(puppeteer-core@24.43.1)(puppeteer@24.19.0(typescript@5.9.3)))(puppeteer@24.19.0(typescript@5.9.3))
       cheerio:
         specifier: 1.0.0-rc.12
         version: 1.0.0-rc.12
@@ -54,10 +59,10 @@ importers:
     dependencies:
       '@geekgeekrun/puppeteer-extra-plugin-laodeng':
         specifier: workspace:*
-        version: link:../laodeng
+        version: file:packages/laodeng(playwright-extra@4.3.6)(puppeteer-extra@3.3.6(puppeteer-core@24.43.1)(puppeteer@24.19.0(typescript@5.9.3)))(puppeteer@24.19.0(typescript@5.9.3))
       '@geekgeekrun/sqlite-plugin':
         specifier: workspace:*
-        version: link:../sqlite-plugin
+        version: file:packages/sqlite-plugin(ts-node@10.9.2(@types/node@22.19.17)(typescript@5.9.3))
       '@geekgeekrun/utils':
         specifier: workspace:*
         version: link:../utils
@@ -89,7 +94,7 @@ importers:
     dependencies:
       '@geekgeekrun/sqlite-plugin':
         specifier: workspace:*
-        version: link:../sqlite-plugin
+        version: file:packages/sqlite-plugin(ts-node@10.9.2(@types/node@22.19.17)(typescript@5.9.3))
       '@geekgeekrun/utils':
         specifier: workspace:*
         version: link:../utils
@@ -98,10 +103,10 @@ importers:
     dependencies:
       '@geekgeekrun/geek-auto-start-chat-with-boss':
         specifier: workspace:*
-        version: link:../geek-auto-start-chat-with-boss
+        version: file:packages/geek-auto-start-chat-with-boss(ws@8.20.0)(zod@3.25.76)
       '@geekgeekrun/puppeteer-extra-plugin-laodeng':
         specifier: workspace:*
-        version: link:../laodeng
+        version: file:packages/laodeng(playwright-extra@4.3.6)(puppeteer-extra@3.3.6(puppeteer-core@24.43.1)(puppeteer@24.19.0(typescript@5.9.3)))(puppeteer@24.19.0(typescript@5.9.3))
       '@geekgeekrun/utils':
         specifier: workspace:*
         version: link:../utils
@@ -140,7 +145,7 @@ importers:
     dependencies:
       '@geekgeekrun/geek-auto-start-chat-with-boss':
         specifier: workspace:*
-        version: link:../geek-auto-start-chat-with-boss
+        version: file:packages/geek-auto-start-chat-with-boss(ws@8.20.0)(zod@3.25.76)
       '@geekgeekrun/utils':
         specifier: workspace:*
         version: link:../utils
@@ -171,7 +176,7 @@ importers:
         version: link:../boss-auto-browse-and-chat
       '@geekgeekrun/sqlite-plugin':
         specifier: workspace:*
-        version: link:../sqlite-plugin
+        version: file:packages/sqlite-plugin(ts-node@10.9.2(@types/node@22.19.17)(typescript@5.9.3))
       '@geekgeekrun/utils':
         specifier: workspace:*
         version: link:../utils
@@ -186,7 +191,7 @@ importers:
         version: link:../geek-auto-start-chat-with-boss
       '@geekgeekrun/sqlite-plugin':
         specifier: workspace:*
-        version: link:../sqlite-plugin
+        version: file:packages/sqlite-plugin(ts-node@10.9.2(@types/node@22.19.17)(typescript@5.9.3))
       '@geekgeekrun/utils':
         specifier: workspace:*
         version: link:../utils
@@ -238,16 +243,16 @@ importers:
         version: 2.3.2(vue@3.5.33(typescript@5.9.3))
       '@geekgeekrun/boss-auto-browse-and-chat':
         specifier: workspace:*
-        version: link:../boss-auto-browse-and-chat
+        version: file:packages/boss-auto-browse-and-chat(playwright-extra@4.3.6)(puppeteer-core@24.43.1)(ts-node@10.9.2(@types/node@18.19.130)(typescript@5.9.3))(typescript@5.9.3)(ws@8.20.0)(zod@3.25.76)
       '@geekgeekrun/launch-bosszhipin-login-page-with-preload-extension':
         specifier: workspace:*
-        version: link:../launch-bosszhipin-login-page-with-preload-extension
+        version: file:packages/launch-bosszhipin-login-page-with-preload-extension(ts-node@10.9.2(@types/node@18.19.130)(typescript@5.9.3))(ws@8.20.0)(zod@3.25.76)
       '@geekgeekrun/pm':
         specifier: workspace:*
         version: link:../pm
       '@geekgeekrun/puppeteer-extra-plugin-laodeng':
         specifier: workspace:*
-        version: link:../laodeng
+        version: file:packages/laodeng(playwright-extra@4.3.6)(puppeteer-extra@3.3.6(puppeteer-core@24.43.1)(puppeteer@24.19.0(typescript@5.9.3)))(puppeteer@24.19.0(typescript@5.9.3))
       '@geekgeekrun/sqlite-plugin':
         specifier: workspace:*
         version: link:../sqlite-plugin
@@ -308,7 +313,7 @@ importers:
         version: link:../dingtalk-plugin
       '@geekgeekrun/geek-auto-start-chat-with-boss':
         specifier: workspace:*
-        version: link:../geek-auto-start-chat-with-boss
+        version: file:packages/geek-auto-start-chat-with-boss(ts-node@10.9.2(@types/node@18.19.130)(typescript@5.9.3))(ws@8.20.0)(zod@3.25.76)
       '@inquirer/prompts':
         specifier: ^7.0.1
         version: 7.10.1(@types/node@18.19.130)
@@ -812,6 +817,33 @@ packages:
 
   '@floating-ui/utils@0.2.11':
     resolution: {integrity: sha512-RiB/yIh78pcIxl6lLMG0CgBXAZ2Y0eVHqMPYugu+9U0AeT6YBeiJpf7lbdJNIugFP5SIjwNRgo4DhR1Qxi26Gg==}
+
+  '@geekgeekrun/boss-auto-browse-and-chat@file:packages/boss-auto-browse-and-chat':
+    resolution: {directory: packages/boss-auto-browse-and-chat, type: directory}
+
+  '@geekgeekrun/geek-auto-start-chat-with-boss@file:packages/geek-auto-start-chat-with-boss':
+    resolution: {directory: packages/geek-auto-start-chat-with-boss, type: directory}
+
+  '@geekgeekrun/launch-bosszhipin-login-page-with-preload-extension@file:packages/launch-bosszhipin-login-page-with-preload-extension':
+    resolution: {directory: packages/launch-bosszhipin-login-page-with-preload-extension, type: directory}
+
+  '@geekgeekrun/puppeteer-extra-plugin-laodeng@file:packages/laodeng':
+    resolution: {directory: packages/laodeng, type: directory}
+    peerDependencies:
+      playwright-extra: '*'
+      puppeteer: ^24.19.0
+      puppeteer-extra: '*'
+    peerDependenciesMeta:
+      playwright-extra:
+        optional: true
+      puppeteer-extra:
+        optional: true
+
+  '@geekgeekrun/sqlite-plugin@file:packages/sqlite-plugin':
+    resolution: {directory: packages/sqlite-plugin, type: directory}
+
+  '@geekgeekrun/utils@file:packages/utils':
+    resolution: {directory: packages/utils, type: directory}
 
   '@humanwhocodes/config-array@0.13.0':
     resolution: {integrity: sha512-DZLEEqFWQFiyK6h5YIeynKx7JlvCYWL0cImfSRXZ9l4Sg2efkFGTuFf6vzXjK1cq6IYkU+Eg/JizXw+TD2vRNw==}
@@ -2667,10 +2699,6 @@ packages:
     resolution: {integrity: sha512-DfXN8DfhJ7NH3Oe7cFmu3NCu1wKbkReJ8TorzSAFbSKrlNaQSKfIzqYqVY8zlbs2NLBbWpRiU52GX2PbaBVNkg==}
     deprecated: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
     hasBin: true
-
-  glob@7.2.0:
-    resolution: {integrity: sha512-lmLf6gtyrPq8tTjSmrO94wBeQbFR3HbLHbuyD69wuyQkImp2hWqMGB47OX65FBkPffO641IP9jWa1z4ivqG26Q==}
-    deprecated: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
 
   glob@7.2.3:
     resolution: {integrity: sha512-nFR0zLpU2YCaRxwoCJvL6UvCH2JFyFVIvwTLsIf21AuHlMskA1hhTdk+LlYJtOlYt9v6dvszD2BGRqBL+iQK9Q==}
@@ -4755,6 +4783,225 @@ snapshots:
 
   '@floating-ui/utils@0.2.11': {}
 
+  '@geekgeekrun/boss-auto-browse-and-chat@file:packages/boss-auto-browse-and-chat(playwright-extra@4.3.6)(puppeteer-core@24.43.1)(ts-node@10.9.2(@types/node@18.19.130)(typescript@5.9.3))(typescript@5.9.3)(ws@8.20.0)(zod@3.25.76)':
+    dependencies:
+      '@geekgeekrun/puppeteer-extra-plugin-laodeng': file:packages/laodeng(playwright-extra@4.3.6)(puppeteer-extra@3.3.6(puppeteer-core@24.43.1)(puppeteer@24.19.0(typescript@5.9.3)))(puppeteer@24.19.0(typescript@5.9.3))
+      '@geekgeekrun/sqlite-plugin': file:packages/sqlite-plugin(ts-node@10.9.2(@types/node@18.19.130)(typescript@5.9.3))
+      '@geekgeekrun/utils': file:packages/utils(ws@8.20.0)(zod@3.25.76)
+      ghost-cursor: 1.4.2
+      json5: 2.2.3
+      puppeteer: 24.19.0(typescript@5.9.3)
+      puppeteer-extra: 3.3.6(puppeteer-core@24.43.1)(puppeteer@24.19.0(typescript@5.9.3))
+      puppeteer-extra-plugin-anonymize-ua: 2.4.6(patch_hash=cdca73afa2dff574cd3df5dbf84650e003e41e47d906baa15023a67aa58c9cd2)(playwright-extra@4.3.6)(puppeteer-extra@3.3.6(puppeteer-core@24.43.1)(puppeteer@24.19.0(typescript@5.9.3)))
+      puppeteer-extra-plugin-stealth: 2.11.2(playwright-extra@4.3.6)(puppeteer-extra@3.3.6(puppeteer-core@24.43.1)(puppeteer@24.19.0(typescript@5.9.3)))
+      tapable: 2.3.3
+    transitivePeerDependencies:
+      - '@google-cloud/spanner'
+      - '@sap/hana-client'
+      - '@types/puppeteer'
+      - babel-plugin-macros
+      - bare-abort-controller
+      - bare-buffer
+      - bufferutil
+      - encoding
+      - ioredis
+      - mongodb
+      - mssql
+      - mysql2
+      - oracledb
+      - pg
+      - pg-native
+      - pg-query-stream
+      - playwright-extra
+      - puppeteer-core
+      - react-native-b4a
+      - redis
+      - sql.js
+      - sqlite3
+      - supports-color
+      - ts-node
+      - typeorm-aurora-data-api-driver
+      - typescript
+      - utf-8-validate
+      - ws
+      - zod
+
+  '@geekgeekrun/geek-auto-start-chat-with-boss@file:packages/geek-auto-start-chat-with-boss(ts-node@10.9.2(@types/node@18.19.130)(typescript@5.9.3))(ws@8.20.0)(zod@3.25.76)':
+    dependencies:
+      '@geekgeekrun/sqlite-plugin': file:packages/sqlite-plugin(ts-node@10.9.2(@types/node@18.19.130)(typescript@5.9.3))
+      '@geekgeekrun/utils': file:packages/utils(ws@8.20.0)(zod@3.25.76)
+    transitivePeerDependencies:
+      - '@google-cloud/spanner'
+      - '@sap/hana-client'
+      - babel-plugin-macros
+      - encoding
+      - ioredis
+      - mongodb
+      - mssql
+      - mysql2
+      - oracledb
+      - pg
+      - pg-native
+      - pg-query-stream
+      - redis
+      - sql.js
+      - sqlite3
+      - supports-color
+      - ts-node
+      - typeorm-aurora-data-api-driver
+      - ws
+      - zod
+
+  '@geekgeekrun/geek-auto-start-chat-with-boss@file:packages/geek-auto-start-chat-with-boss(ws@8.20.0)(zod@3.25.76)':
+    dependencies:
+      '@geekgeekrun/sqlite-plugin': file:packages/sqlite-plugin
+      '@geekgeekrun/utils': file:packages/utils(ws@8.20.0)(zod@3.25.76)
+    transitivePeerDependencies:
+      - '@google-cloud/spanner'
+      - '@sap/hana-client'
+      - babel-plugin-macros
+      - encoding
+      - ioredis
+      - mongodb
+      - mssql
+      - mysql2
+      - oracledb
+      - pg
+      - pg-native
+      - pg-query-stream
+      - redis
+      - sql.js
+      - sqlite3
+      - supports-color
+      - ts-node
+      - typeorm-aurora-data-api-driver
+      - ws
+      - zod
+
+  '@geekgeekrun/launch-bosszhipin-login-page-with-preload-extension@file:packages/launch-bosszhipin-login-page-with-preload-extension(ts-node@10.9.2(@types/node@18.19.130)(typescript@5.9.3))(ws@8.20.0)(zod@3.25.76)':
+    dependencies:
+      '@geekgeekrun/geek-auto-start-chat-with-boss': file:packages/geek-auto-start-chat-with-boss(ts-node@10.9.2(@types/node@18.19.130)(typescript@5.9.3))(ws@8.20.0)(zod@3.25.76)
+      '@geekgeekrun/utils': file:packages/utils(ws@8.20.0)(zod@3.25.76)
+      extract-zip: 2.0.1
+      node-fetch: 3.3.2
+    transitivePeerDependencies:
+      - '@google-cloud/spanner'
+      - '@sap/hana-client'
+      - babel-plugin-macros
+      - encoding
+      - ioredis
+      - mongodb
+      - mssql
+      - mysql2
+      - oracledb
+      - pg
+      - pg-native
+      - pg-query-stream
+      - redis
+      - sql.js
+      - sqlite3
+      - supports-color
+      - ts-node
+      - typeorm-aurora-data-api-driver
+      - ws
+      - zod
+
+  '@geekgeekrun/puppeteer-extra-plugin-laodeng@file:packages/laodeng(playwright-extra@4.3.6)(puppeteer-extra@3.3.6(puppeteer-core@24.43.1)(puppeteer@24.19.0(typescript@5.9.3)))(puppeteer@24.19.0(typescript@5.9.3))':
+    dependencies:
+      puppeteer: 24.19.0(typescript@5.9.3)
+      puppeteer-extra-plugin: 3.2.3(playwright-extra@4.3.6)(puppeteer-extra@3.3.6(puppeteer-core@24.43.1)(puppeteer@24.19.0(typescript@5.9.3)))
+    optionalDependencies:
+      playwright-extra: 4.3.6
+      puppeteer-extra: 3.3.6(puppeteer-core@24.43.1)(puppeteer@24.19.0(typescript@5.9.3))
+    transitivePeerDependencies:
+      - supports-color
+
+  '@geekgeekrun/sqlite-plugin@file:packages/sqlite-plugin':
+    dependencies:
+      better-sqlite3: 12.6.2
+      cli-highlight: 2.1.11
+      lodash: 4.18.1
+      reflect-metadata: 0.2.2
+      typeorm: 0.3.28(better-sqlite3@12.6.2)
+    transitivePeerDependencies:
+      - '@google-cloud/spanner'
+      - '@sap/hana-client'
+      - babel-plugin-macros
+      - ioredis
+      - mongodb
+      - mssql
+      - mysql2
+      - oracledb
+      - pg
+      - pg-native
+      - pg-query-stream
+      - redis
+      - sql.js
+      - sqlite3
+      - supports-color
+      - ts-node
+      - typeorm-aurora-data-api-driver
+
+  '@geekgeekrun/sqlite-plugin@file:packages/sqlite-plugin(ts-node@10.9.2(@types/node@18.19.130)(typescript@5.9.3))':
+    dependencies:
+      better-sqlite3: 12.6.2
+      cli-highlight: 2.1.11
+      lodash: 4.18.1
+      reflect-metadata: 0.2.2
+      typeorm: 0.3.28(better-sqlite3@12.6.2)(ts-node@10.9.2(@types/node@18.19.130)(typescript@5.9.3))
+    transitivePeerDependencies:
+      - '@google-cloud/spanner'
+      - '@sap/hana-client'
+      - babel-plugin-macros
+      - ioredis
+      - mongodb
+      - mssql
+      - mysql2
+      - oracledb
+      - pg
+      - pg-native
+      - pg-query-stream
+      - redis
+      - sql.js
+      - sqlite3
+      - supports-color
+      - ts-node
+      - typeorm-aurora-data-api-driver
+
+  '@geekgeekrun/sqlite-plugin@file:packages/sqlite-plugin(ts-node@10.9.2(@types/node@22.19.17)(typescript@5.9.3))':
+    dependencies:
+      better-sqlite3: 12.6.2
+      cli-highlight: 2.1.11
+      lodash: 4.18.1
+      reflect-metadata: 0.2.2
+      typeorm: 0.3.28(better-sqlite3@12.6.2)(ts-node@10.9.2(@types/node@22.19.17)(typescript@5.9.3))
+    transitivePeerDependencies:
+      - '@google-cloud/spanner'
+      - '@sap/hana-client'
+      - babel-plugin-macros
+      - ioredis
+      - mongodb
+      - mssql
+      - mysql2
+      - oracledb
+      - pg
+      - pg-native
+      - pg-query-stream
+      - redis
+      - sql.js
+      - sqlite3
+      - supports-color
+      - ts-node
+      - typeorm-aurora-data-api-driver
+
+  '@geekgeekrun/utils@file:packages/utils(ws@8.20.0)(zod@3.25.76)':
+    dependencies:
+      openai: 4.104.0(ws@8.20.0)(zod@3.25.76)
+    transitivePeerDependencies:
+      - encoding
+      - ws
+      - zod
+
   '@humanwhocodes/config-array@0.13.0':
     dependencies:
       '@humanwhocodes/object-schema': 2.0.3
@@ -5771,7 +6018,7 @@ snapshots:
 
   archiver-utils@2.1.0:
     dependencies:
-      glob: 7.2.0
+      glob: 7.2.3
       graceful-fs: 4.2.11
       lazystream: 1.0.1
       lodash.defaults: 4.2.0
@@ -6879,15 +7126,6 @@ snapshots:
       minipass: 7.1.3
       package-json-from-dist: 1.0.1
       path-scurry: 1.11.1
-
-  glob@7.2.0:
-    dependencies:
-      fs.realpath: 1.0.0
-      inflight: 1.0.6
-      inherits: 2.0.4
-      minimatch: 3.1.5
-      once: 1.4.0
-      path-is-absolute: 1.0.1
 
   glob@7.2.3:
     dependencies:
@@ -8283,6 +8521,25 @@ snapshots:
       v8-compile-cache-lib: 3.0.1
       yn: 3.1.1
 
+  ts-node@10.9.2(@types/node@22.19.17)(typescript@5.9.3):
+    dependencies:
+      '@cspotcode/source-map-support': 0.8.1
+      '@tsconfig/node10': 1.0.12
+      '@tsconfig/node12': 1.0.11
+      '@tsconfig/node14': 1.0.3
+      '@tsconfig/node16': 1.0.4
+      '@types/node': 22.19.17
+      acorn: 8.16.0
+      acorn-walk: 8.3.5
+      arg: 4.1.3
+      create-require: 1.1.1
+      diff: 4.0.4
+      make-error: 1.3.6
+      typescript: 5.9.3
+      v8-compile-cache-lib: 3.0.1
+      yn: 3.1.1
+    optional: true
+
   tslib@2.8.1: {}
 
   tunnel-agent@0.6.0:
@@ -8306,6 +8563,29 @@ snapshots:
 
   typed-query-selector@2.12.2: {}
 
+  typeorm@0.3.28(better-sqlite3@12.6.2):
+    dependencies:
+      '@sqltools/formatter': 1.2.5
+      ansis: 4.2.0
+      app-root-path: 3.1.0
+      buffer: 6.0.3
+      dayjs: 1.11.20
+      debug: 4.4.3
+      dedent: 1.7.2
+      dotenv: 16.6.1
+      glob: 10.5.0
+      reflect-metadata: 0.2.2
+      sha.js: 2.4.12
+      sql-highlight: 6.1.0
+      tslib: 2.8.1
+      uuid: 11.1.1
+      yargs: 17.7.2
+    optionalDependencies:
+      better-sqlite3: 12.6.2
+    transitivePeerDependencies:
+      - babel-plugin-macros
+      - supports-color
+
   typeorm@0.3.28(better-sqlite3@12.6.2)(ts-node@10.9.2(@types/node@18.19.130)(typescript@5.9.3)):
     dependencies:
       '@sqltools/formatter': 1.2.5
@@ -8326,6 +8606,30 @@ snapshots:
     optionalDependencies:
       better-sqlite3: 12.6.2
       ts-node: 10.9.2(@types/node@18.19.130)(typescript@5.9.3)
+    transitivePeerDependencies:
+      - babel-plugin-macros
+      - supports-color
+
+  typeorm@0.3.28(better-sqlite3@12.6.2)(ts-node@10.9.2(@types/node@22.19.17)(typescript@5.9.3)):
+    dependencies:
+      '@sqltools/formatter': 1.2.5
+      ansis: 4.2.0
+      app-root-path: 3.1.0
+      buffer: 6.0.3
+      dayjs: 1.11.20
+      debug: 4.4.3
+      dedent: 1.7.2
+      dotenv: 16.6.1
+      glob: 10.5.0
+      reflect-metadata: 0.2.2
+      sha.js: 2.4.12
+      sql-highlight: 6.1.0
+      tslib: 2.8.1
+      uuid: 11.1.1
+      yargs: 17.7.2
+    optionalDependencies:
+      better-sqlite3: 12.6.2
+      ts-node: 10.9.2(@types/node@22.19.17)(typescript@5.9.3)
     transitivePeerDependencies:
       - babel-plugin-macros
       - supports-color

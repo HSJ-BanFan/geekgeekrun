@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Package Manager
 
-Use bare `pnpm` (v8 or v10+ both work). The `engines.pnpm` constraint is `>=8.15.9`.
+Use bare `pnpm`. The root `packageManager` field is the canonical CI/build pin, and the `engines.pnpm` constraint is `>=10`.
 
 ```bash
 pnpm install

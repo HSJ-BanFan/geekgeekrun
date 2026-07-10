@@ -1,6 +1,5 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import puppeteer from 'puppeteer'
 import { resolveCityCode } from './city-codes.mjs'
 import { getRuntimeContext } from './runtime-context.mjs'
 
@@ -516,6 +515,7 @@ function getMarketJobObservationRank (rawJob, fallbackRank) {
 async function openMarketJobsBrowser ({ headless = false, browserUrl = '', cdpPort = '' } = {}) {
   const endpoint = browserUrl || (cdpPort ? `http://127.0.0.1:${cdpPort}` : '')
   if (endpoint) {
+    const { default: puppeteer } = await import('puppeteer')
     const connectOptions = /^wss?:\/\//i.test(endpoint)
       ? { browserWSEndpoint: endpoint }
       : { browserURL: endpoint }

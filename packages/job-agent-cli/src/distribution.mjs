@@ -75,6 +75,7 @@ function diagnoseInstallation (runtimeContext) {
       manifestPath: null,
       integrity: 'not-applicable',
       componentChecks: {},
+      integrityChecks: {},
       manifest: null,
     }
   }
@@ -96,6 +97,12 @@ function diagnoseInstallation (runtimeContext) {
       checkComponent(installRoot, component),
     ])
   )
+  const integrityChecks = Object.fromEntries(
+    (manifest.integrity?.files ?? []).map(file => [
+      String(file?.path ?? ''),
+      checkComponent(installRoot, file),
+    ])
+  )
   for (const componentName of ['nodeRuntime', 'nodeCli']) {
     if (!componentChecks[componentName]) {
       componentChecks[componentName] = componentFailure('COMPONENT_NOT_DECLARED')
@@ -104,7 +111,8 @@ function diagnoseInstallation (runtimeContext) {
   if (manifest.features?.sidecar && !componentChecks.sidecar) {
     componentChecks.sidecar = componentFailure('COMPONENT_NOT_DECLARED')
   }
-  const failedComponent = Object.values(componentChecks).find(check => !check.ready)
+  const failedComponent = [...Object.values(componentChecks), ...Object.values(integrityChecks)]
+    .find(check => !check.ready)
   if (failedComponent) {
     return {
       ready: false,
@@ -112,6 +120,7 @@ function diagnoseInstallation (runtimeContext) {
       manifestPath: runtimeContext.installManifestPath,
       integrity: 'failed',
       componentChecks,
+      integrityChecks,
       manifest,
     }
   }
@@ -122,6 +131,7 @@ function diagnoseInstallation (runtimeContext) {
     manifestPath: runtimeContext.installManifestPath,
     integrity: 'verified',
     componentChecks,
+    integrityChecks,
     manifest,
   }
 }
@@ -264,6 +274,7 @@ function installationFailure (reasonCode, manifestPath, manifest = null) {
     manifestPath: manifestPath || null,
     integrity: 'failed',
     componentChecks: {},
+    integrityChecks: {},
     manifest,
   }
 }
@@ -322,6 +333,9 @@ function readInstallationManifest (filePath) {
   if (!isRecord(manifest.components)) {
     return { ok: false, reasonCode: 'INSTALL_MANIFEST_INVALID', manifest }
   }
+  if (manifest.integrity !== undefined && !validIntegrityMetadata(manifest.integrity)) {
+    return { ok: false, reasonCode: 'INSTALL_MANIFEST_INVALID', manifest }
+  }
   return { ok: true, value: manifest, manifest }
 }
 
@@ -347,6 +361,13 @@ function sameContracts (actual, expected) {
 
 function sameFeatures (actual, expected) {
   return Object.entries(expected).every(([name, enabled]) => actual?.[name] === enabled)
+}
+
+function validIntegrityMetadata (integrity) {
+  return isRecord(integrity) &&
+    integrity.algorithm === 'sha256' &&
+    Array.isArray(integrity.files) &&
+    integrity.files.every(file => isRecord(file))
 }
 
 function isRecord (value) {

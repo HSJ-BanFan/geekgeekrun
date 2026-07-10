@@ -28,3 +28,6 @@ database.sqlite
 *.db
 *.db-journal
 .env.local.worktrees
+
+# local portable release builds
+artifacts/job-agent-portable/

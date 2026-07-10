@@ -6,7 +6,10 @@
   "module": "./main/index.mjs",
   "type": "module",
   "scripts": {
-    "start": "node ./packages/run-core-of-geek-auto-start-chat-with-boss/daemon-main.mjs"
+    "start": "node ./packages/run-core-of-geek-auto-start-chat-with-boss/daemon-main.mjs",
+    "test:job-agent-portable": "node --test scripts/job-agent-portable.test.mjs",
+    "build:job-agent-portable": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-job-agent-portable.ps1",
+    "smoke:job-agent-portable": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-test-job-agent-portable.ps1"
   },
   "author": "geekgeekrun",
   "license": "ISC",
@@ -30,6 +33,7 @@
     "node": "20.16.0"
   },
   "engines": {
-    "pnpm": ">=8.15.9"
-  }
+    "pnpm": ">=10"
+  },
+  "packageManager": "pnpm@10.15.1"
 }
