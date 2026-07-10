@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/job-agent-contract-gate.yml"
+      - ".github/workflows/release-job-agent.yml"
       - ".npmrc"
       - "CONTEXT.md"
       - "docs/adr/**"
@@ -28,6 +29,7 @@ on:
       - main
     paths:
       - ".github/workflows/job-agent-contract-gate.yml"
+      - ".github/workflows/release-job-agent.yml"
       - ".npmrc"
       - "CONTEXT.md"
       - "docs/adr/**"
@@ -82,6 +84,9 @@ jobs:
 
       - name: Test CLI
         run: pnpm --filter @geekgeekrun/job-agent-cli test
+
+      - name: Test release automation contract
+        run: pnpm test:job-agent-release
 
   job-agent-sidecar:
     name: job-agent-sidecar

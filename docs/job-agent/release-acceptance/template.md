@@ -6,6 +6,7 @@
 - Release tag:
 - Candidate workflow run ID:
 - Installer SHA-256:
+- Related issues to close:
 - Installer SHA-256 verified: pass / fail
 - Windows edition and build:
 - Browser product and version:

@@ -1,56 +1,205 @@
 name: Release Job Agent
 
 on:
-  push:
-    tags:
-      - "job-agent-v*"
   workflow_dispatch:
     inputs:
-      release_tag:
-        description: Immutable job-agent-v* tag to publish
-        required: true
-        type: string
-      candidate_run_id:
-        description: Successful tag workflow run containing the tested candidate artifact
+      version:
+        description: Distribution version without the job-agent-v prefix
         required: true
         type: string
       acceptance_issue:
-        description: Closed GitHub issue containing the completed human release acceptance record
+        description: GitHub issue used for the human Windows/BOSS acceptance record
         required: true
+        type: string
+      close_issues:
+        description: Optional comma or space separated issue numbers to close after publication
+        required: false
+        default: ""
         type: string
 
 permissions:
-  contents: write
-  id-token: write
+  actions: read
   attestations: write
+  contents: write
+  deployments: write
+  id-token: write
+  issues: write
+
+concurrency:
+  group: job-agent-release-${{ inputs.version }}
+  cancel-in-progress: false
 
 jobs:
+  preflight:
+    name: plan-and-pin-job-agent-release
+    runs-on: ubuntu-22.04
+    outputs:
+      release_tag: ${{ steps.preflight.outputs.release_tag }}
+      version: ${{ steps.preflight.outputs.version }}
+      prerelease: ${{ steps.preflight.outputs.prerelease }}
+      release_exists: ${{ steps.preflight.outputs.release_exists }}
+      target_sha: ${{ steps.preflight.outputs.target_sha }}
+      candidate_run_id: ${{ steps.preflight.outputs.candidate_run_id }}
+      reuse_candidate: ${{ steps.preflight.outputs.reuse_candidate }}
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.16.0
+
+      - name: Validate inputs, required gate, and immutable tag
+        id: preflight
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION_INPUT: ${{ inputs.version }}
+          ACCEPTANCE_ISSUE_INPUT: ${{ inputs.acceptance_issue }}
+          CLOSE_ISSUES_INPUT: ${{ inputs.close_issues }}
+        run: |
+          set -euo pipefail
+          plan="$(node scripts/job-agent-release.mjs plan \
+            --version "$VERSION_INPUT" \
+            --acceptance-issue "$ACCEPTANCE_ISSUE_INPUT" \
+            --close-issues "$CLOSE_ISSUES_INPUT")"
+          version="$(jq -r .version <<<"$plan")"
+          release_tag="$(jq -r .releaseTag <<<"$plan")"
+          prerelease="$(jq -r .prerelease <<<"$plan")"
+
+          acceptance_state="$(gh issue view "$ACCEPTANCE_ISSUE_INPUT" \
+            --repo "${{ github.repository }}" \
+            --json state \
+            --jq .state)"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$release_tag" >/dev/null 2>&1; then
+            git fetch origin "refs/tags/$release_tag:refs/tags/$release_tag"
+            target_sha="$(git rev-list -n 1 "$release_tag")"
+            metadata_version="$(git show "$release_tag:packages/job-agent-cli/distribution-metadata.json" | jq -r .distributionVersion)"
+          else
+            if [[ "${{ github.ref_name }}" != "main" ]]; then
+              echo "::error::New Job Agent releases must be dispatched from main"
+              exit 1
+            fi
+            target_sha="${{ github.sha }}"
+            metadata_version="$(jq -r .distributionVersion packages/job-agent-cli/distribution-metadata.json)"
+          fi
+
+          if [[ "$metadata_version" != "$version" ]]; then
+            echo "::error::Requested version $version does not match distribution metadata $metadata_version"
+            exit 1
+          fi
+
+          release_exists=false
+          candidate_run_id="${{ github.run_id }}"
+          reuse_candidate=false
+          if release_json="$(gh release view "$release_tag" --repo "${{ github.repository }}" --json tagName,isDraft,body,url 2>/dev/null)"; then
+            release_exists=true
+            expected_acceptance_url="https://github.com/${{ github.repository }}/issues/$ACCEPTANCE_ISSUE_INPUT"
+            if ! jq -er .body <<<"$release_json" | grep -F "$expected_acceptance_url" >/dev/null; then
+              echo "::error::The published release is bound to a different acceptance record"
+              exit 1
+            fi
+            recorded_source_sha="$(jq -r '.body | capture("Source commit: `(?<sha>[a-f0-9]{40})`").sha // empty' <<<"$release_json")"
+            if [[ -z "$recorded_source_sha" || "$recorded_source_sha" != "$target_sha" ]]; then
+              echo "::error::The immutable release tag no longer matches the recorded source commit"
+              exit 1
+            fi
+            recorded_candidate_run="$(jq -r '.body | capture("actions/runs/(?<runId>[0-9]+)").runId // empty' <<<"$release_json")"
+            if [[ -z "$recorded_candidate_run" ]]; then
+              echo "::error::The published release does not identify its tested candidate workflow"
+              exit 1
+            fi
+            candidate_run_id="$recorded_candidate_run"
+          fi
+
+          if [[ "$release_exists" != "true" ]]; then
+            gate_run="$(gh run list \
+              --repo "${{ github.repository }}" \
+              --workflow job-agent-contract-gate.yml \
+              --commit "$target_sha" \
+              --limit 20 \
+              --json databaseId,status,conclusion,headSha,headBranch,event,url \
+              --jq '[.[] | select(.status == "completed" and .conclusion == "success" and .event == "push" and .headBranch == "main")][0]')"
+            if [[ -z "$gate_run" || "$gate_run" == "null" ]]; then
+              echo "::error::The target commit requires a successful main push Job-Agent Contract Gate before release"
+              exit 1
+            fi
+
+            if ! git show-ref --verify --quiet "refs/tags/$release_tag"; then
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git tag -a "$release_tag" "$target_sha" -m "GeekGeekRun Job Agent $version"
+              git push origin "refs/tags/$release_tag"
+            fi
+
+            while read -r prior_run_id; do
+              [[ -z "$prior_run_id" || "$prior_run_id" == "${{ github.run_id }}" ]] && continue
+              jobs_json="$(gh api "repos/${{ github.repository }}/actions/runs/$prior_run_id/jobs?per_page=100")"
+              if ! jq -e 'any(.jobs[]; .name == "build-job-agent-release-candidate-windows-x64" and .conclusion == "success")' <<<"$jobs_json" >/dev/null; then
+                continue
+              fi
+              if ! jq -e 'any(.jobs[]; .name == "release-candidate-installed-product-windows-x64" and .conclusion == "success")' <<<"$jobs_json" >/dev/null; then
+                continue
+              fi
+              artifacts_json="$(gh api "repos/${{ github.repository }}/actions/runs/$prior_run_id/artifacts?per_page=100")"
+              if jq -e 'any(.artifacts[]; .name == "job-agent-release-candidate" and .expired == false)' <<<"$artifacts_json" >/dev/null; then
+                candidate_run_id="$prior_run_id"
+                reuse_candidate=true
+                break
+              fi
+            done < <(gh run list \
+              --repo "${{ github.repository }}" \
+              --workflow release-job-agent.yml \
+              --event workflow_dispatch \
+              --commit "$target_sha" \
+              --limit 50 \
+              --json databaseId,createdAt \
+              --jq '.[].databaseId')
+
+            if [[ "$reuse_candidate" != "true" && "$acceptance_state" != "OPEN" ]]; then
+              echo "::error::The acceptance issue must remain open until the tested candidate is recorded"
+              exit 1
+            fi
+          fi
+
+          {
+            echo "release_tag=$release_tag"
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+            echo "release_exists=$release_exists"
+            echo "target_sha=$target_sha"
+            echo "candidate_run_id=$candidate_run_id"
+            echo "reuse_candidate=$reuse_candidate"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Job Agent release plan"
+            echo "- Tag: \`$release_tag\`"
+            echo "- Commit: \`$target_sha\`"
+            echo "- Acceptance issue: #$ACCEPTANCE_ISSUE_INPUT"
+            echo "- Already published: \`$release_exists\`"
+            echo "- Candidate workflow run: \`$candidate_run_id\`"
+            echo "- Reusing tested candidate: \`$reuse_candidate\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build-release-candidate:
-    if: ${{ github.event_name == 'push' }}
+    if: ${{ needs.preflight.outputs.release_exists != 'true' && needs.preflight.outputs.reuse_candidate != 'true' }}
     name: build-job-agent-release-candidate-windows-x64
     runs-on: windows-2022
+    needs:
+      - preflight
     env:
       PUPPETEER_SKIP_DOWNLOAD: "true"
     steps:
       - name: Checkout immutable release tag
         uses: actions/checkout@v4
         with:
+          ref: ${{ needs.preflight.outputs.release_tag }}
           fetch-depth: 0
-
-      - name: Validate tag and distribution version
-        id: version
-        shell: powershell
-        run: |
-          $tag = "${{ github.ref_name }}"
-          if ($tag -notmatch '^job-agent-v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$') {
-            throw "Job Agent releases require a job-agent-v* tag"
-          }
-          $version = $Matches[1]
-          $metadata = Get-Content -Raw packages/job-agent-cli/distribution-metadata.json | ConvertFrom-Json
-          if ([string]$metadata.distributionVersion -ne $version) {
-            throw "Tag version $version does not match distribution version $($metadata.distributionVersion)"
-          }
-          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -101,7 +250,7 @@ jobs:
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/download-job-agent-browser-fixture.ps1
 
       - name: Require and apply Authenticode for stable releases
-        if: ${{ !startsWith(github.ref_name, 'job-agent-v0.') }}
+        if: ${{ needs.preflight.outputs.prerelease != 'true' }}
         shell: powershell
         env:
           WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
@@ -123,6 +272,7 @@ jobs:
           Remove-Item -LiteralPath $certificatePath -Force
 
       - name: Write SHA-256 checksums
+        id: checksums
         shell: powershell
         run: |
           function Get-Sha256([string]$Path) {
@@ -140,6 +290,8 @@ jobs:
             "$hash *$($file.Name)"
           }
           $lines | Set-Content -LiteralPath artifacts/SHA256SUMS.txt -Encoding ascii
+          $installer = $files | Where-Object Name -Like '*-setup.exe' | Select-Object -First 1
+          if (-not $installer) { throw "Job Agent installer was not built" }
 
       - name: Attest release provenance
         uses: actions/attest-build-provenance@v2
@@ -169,14 +321,17 @@ jobs:
           retention-days: 30
 
   installed-product-gate:
-    if: ${{ github.event_name == 'push' }}
+    if: ${{ needs.preflight.outputs.release_exists != 'true' && needs.preflight.outputs.reuse_candidate != 'true' }}
     name: release-candidate-installed-product-windows-x64
     runs-on: windows-2022
     needs:
+      - preflight
       - build-release-candidate
     steps:
       - name: Checkout immutable release tag fixtures
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.release_tag }}
 
       - name: Download release candidate
         uses: actions/download-artifact@v4
@@ -199,93 +354,162 @@ jobs:
           if (-not $browserArchive) { throw "Pinned browser gate fixture was not downloaded" }
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-test-job-agent-installer.ps1 -InstallerPath $installer.FullName -BrowserArchivePath $browserArchive.FullName
 
-  publish-release:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
-    name: publish-accepted-job-agent-release
-    runs-on: windows-2022
+  record-candidate:
+    if: ${{ always() && needs.preflight.result == 'success' && needs.preflight.outputs.release_exists != 'true' && (needs.preflight.outputs.reuse_candidate == 'true' || (needs.build-release-candidate.result == 'success' && needs.installed-product-gate.result == 'success')) }}
+    name: record-tested-candidate-for-human-acceptance
+    runs-on: ubuntu-22.04
+    needs:
+      - preflight
+      - build-release-candidate
+      - installed-product-gate
     steps:
-      - name: Checkout immutable release tag
+      - name: Checkout release automation
         uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          ref: ${{ inputs.release_tag }}
-          fetch-depth: 0
+          node-version: 20.16.0
 
-      - name: Validate tag, version, and successful candidate run
-        id: version
-        shell: powershell
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
-        run: |
-          $tag = $env:RELEASE_TAG
-          if ($tag -notmatch '^job-agent-v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$') {
-            throw "Job Agent releases require a job-agent-v* tag"
-          }
-          $version = $Matches[1]
-          $metadata = Get-Content -Raw packages/job-agent-cli/distribution-metadata.json | ConvertFrom-Json
-          if ([string]$metadata.distributionVersion -ne $version) {
-            throw "Tag version $version does not match distribution version $($metadata.distributionVersion)"
-          }
-          $tagCommit = (git rev-list -n 1 $tag).Trim()
-          $candidateRun = gh api "repos/${{ github.repository }}/actions/runs/$env:CANDIDATE_RUN_ID" | ConvertFrom-Json
-          if ($candidateRun.event -ne 'push' -or $candidateRun.conclusion -ne 'success') {
-            throw "Candidate workflow run must be a successful tag push run"
-          }
-          if ([string]$candidateRun.path -ne '.github/workflows/release-job-agent.yml') {
-            throw "Candidate workflow run must come from the Release Job Agent workflow"
-          }
-          if ([string]$candidateRun.head_sha -ne $tagCommit) {
-            throw "Candidate workflow run commit does not match $tag"
-          }
-          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-
-      - name: Download successful release candidate
+      - name: Download tested release candidate
         uses: actions/download-artifact@v4
         with:
           name: job-agent-release-candidate
           path: artifacts
           github-token: ${{ github.token }}
-          run-id: ${{ inputs.candidate_run_id }}
+          run-id: ${{ needs.preflight.outputs.candidate_run_id }}
 
-      - name: Validate tested installer hash and human acceptance record
-        shell: powershell
+      - name: Verify candidate checksum and update acceptance issue
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          function Get-Sha256([string]$Path) {
-            $stream = [System.IO.File]::OpenRead($Path)
-            $sha256 = [System.Security.Cryptography.SHA256]::Create()
-            try { return ([System.BitConverter]::ToString($sha256.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
-            finally { $sha256.Dispose(); $stream.Dispose() }
-          }
-          $installer = Get-ChildItem artifacts -Recurse -Filter *.exe | Where-Object Name -like '*-setup.exe' | Select-Object -First 1
-          if (-not $installer) { throw "Accepted installer candidate is missing" }
-          $installerHash = Get-Sha256 $installer.FullName
+          set -euo pipefail
+          installer="$(find artifacts -type f -name '*-setup.exe' -print -quit)"
+          checksums="$(find artifacts -type f -name SHA256SUMS.txt -print -quit)"
+          if [[ -z "$installer" || -z "$checksums" ]]; then
+            echo "::error::Tested candidate assets are incomplete"
+            exit 1
+          fi
+          actual_hash="$(sha256sum "$installer" | awk '{print $1}')"
+          grep -F "$actual_hash *$(basename "$installer")" "$checksums" >/dev/null
+          node scripts/job-agent-release.mjs record-candidate \
+            --repository "${{ github.repository }}" \
+            --version "${{ needs.preflight.outputs.version }}" \
+            --acceptance-issue "${{ inputs.acceptance_issue }}" \
+            --close-issues "${{ inputs.close_issues }}" \
+            --run-id "${{ needs.preflight.outputs.candidate_run_id }}" \
+            --installer-sha256 "$actual_hash" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  publish-release:
+    if: ${{ needs.preflight.outputs.release_exists != 'true' }}
+    name: publish-accepted-job-agent-release
+    runs-on: ubuntu-22.04
+    needs:
+      - preflight
+      - record-candidate
+    environment:
+      name: job-agent-release
+      url: https://github.com/${{ github.repository }}/issues/${{ inputs.acceptance_issue }}
+    steps:
+      - name: Checkout immutable release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.release_tag }}
+          fetch-depth: 0
+
+      - name: Download the tested release candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: job-agent-release-candidate
+          path: artifacts
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.preflight.outputs.candidate_run_id }}
+
+      - name: Validate candidate identity and completed human acceptance
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $installer = Get-ChildItem artifacts -Recurse -Filter *.exe | Where-Object Name -Like '*-setup.exe' | Select-Object -First 1
           $checksumFile = Get-ChildItem artifacts -Recurse -Filter SHA256SUMS.txt | Select-Object -First 1
-          if (-not $checksumFile -or -not (Select-String -LiteralPath $checksumFile.FullName -SimpleMatch "$installerHash *$($installer.Name)")) {
+          if (-not $installer -or -not $checksumFile) { throw "Accepted candidate assets are incomplete" }
+          $actualHash = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if (-not (Select-String -LiteralPath $checksumFile.FullName -SimpleMatch "$actualHash *$($installer.Name)")) {
             throw "Accepted installer does not match candidate checksums"
           }
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-job-agent-release-acceptance.ps1 `
+          ./scripts/validate-job-agent-release-acceptance.ps1 `
             -Repository "${{ github.repository }}" `
             -IssueNumber ${{ inputs.acceptance_issue }} `
-            -ReleaseTag "${{ inputs.release_tag }}" `
-            -DistributionVersion "${{ steps.version.outputs.version }}" `
-            -InstallerSha256 $installerHash
+            -ReleaseTag "${{ needs.preflight.outputs.release_tag }}" `
+            -DistributionVersion "${{ needs.preflight.outputs.version }}" `
+            -InstallerSha256 $actualHash `
+            -CandidateRunId ${{ needs.preflight.outputs.candidate_run_id }}
 
       - name: Publish accepted Job Agent release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.release_tag }}
-          prerelease: ${{ startsWith(inputs.release_tag, 'job-agent-v0.') }}
+          tag_name: ${{ needs.preflight.outputs.release_tag }}
+          prerelease: ${{ needs.preflight.outputs.prerelease == 'true' }}
           generate_release_notes: true
           body: |
-            GeekGeekRun Job Agent ${{ steps.version.outputs.version }}
+            GeekGeekRun Job Agent ${{ needs.preflight.outputs.version }}
 
             Supported target: Windows x64, installed per current user without administrator rights.
             This release does not claim macOS or Linux support.
             Human acceptance record: https://github.com/${{ github.repository }}/issues/${{ inputs.acceptance_issue }}
+            Candidate workflow: https://github.com/${{ github.repository }}/actions/runs/${{ needs.preflight.outputs.candidate_run_id }}
+            Source commit: `${{ needs.preflight.outputs.target_sha }}`
           files: |
             artifacts/**/*.exe
             artifacts/**/*.zip
             artifacts/**/SHA256SUMS.txt
+
+  finalize:
+    if: ${{ always() && needs.preflight.result == 'success' && (needs.preflight.outputs.release_exists == 'true' || needs.publish-release.result == 'success') }}
+    name: reconcile-release-record-and-related-issues
+    runs-on: ubuntu-22.04
+    needs:
+      - preflight
+      - publish-release
+    steps:
+      - name: Checkout release automation
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.16.0
+
+      - name: Revalidate the published asset against the human acceptance record
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $release = gh release view "${{ needs.preflight.outputs.release_tag }}" --repo "${{ github.repository }}" --json assets,body | ConvertFrom-Json
+          $installerAsset = $release.assets | Where-Object Name -Like '*-setup.exe' | Select-Object -First 1
+          if (-not $installerAsset -or -not $installerAsset.digest) { throw "Published installer digest is unavailable" }
+          $installerHash = ([string]$installerAsset.digest).Replace('sha256:', '').ToLowerInvariant()
+          $candidateMatch = [regex]::Match([string]$release.body, 'actions/runs/(?<runId>\d+)')
+          if (-not $candidateMatch.Success) { throw "Published release candidate run is unavailable" }
+          $candidateRunId = [long]$candidateMatch.Groups['runId'].Value
+          ./scripts/validate-job-agent-release-acceptance.ps1 `
+            -Repository "${{ github.repository }}" `
+            -IssueNumber ${{ inputs.acceptance_issue }} `
+            -ReleaseTag "${{ needs.preflight.outputs.release_tag }}" `
+            -DistributionVersion "${{ needs.preflight.outputs.version }}" `
+            -InstallerSha256 $installerHash `
+            -CandidateRunId $candidateRunId
+
+      - name: Write release evidence and close related issues idempotently
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          node scripts/job-agent-release.mjs finalize \
+            --repository "${{ github.repository }}" \
+            --version "${{ needs.preflight.outputs.version }}" \
+            --acceptance-issue "${{ inputs.acceptance_issue }}" \
+            --close-issues "${{ inputs.close_issues }}" \
+            --workflow-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" | tee -a "$GITHUB_STEP_SUMMARY"

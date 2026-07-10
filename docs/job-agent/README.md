@@ -5,6 +5,6 @@ The Job Agent is a separate Windows x64 product for an Agent Operator. It is not
 - [Windows getting started](windows-getting-started.md)
 - [Command reference](command-reference.md)
 - [Troubleshooting](troubleshooting.md)
-- [Human release acceptance](release-acceptance/README.md)
+- [One-dispatch release automation and human acceptance](release-acceptance/README.md)
 
 The normal path is read-only first: install, diagnose, inspect a Market Job Evidence plan, set up a managed browser, log in manually, and run one bounded evidence capture. Installation never grants Application Authorization.
