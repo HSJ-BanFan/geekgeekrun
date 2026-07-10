@@ -1,5 +1,4 @@
-import { readConfigFile } from '@geekgeekrun/geek-auto-start-chat-with-boss/runtime-file-utils.mjs'
-import { getEnabledRecallKeywords, getGreetingRules } from './config.mjs'
+import { getEnabledRecallKeywords, getGreetingRules, readRuntimeConfigFile } from './config.mjs'
 import { isSensitiveProfileSignal, redactSensitiveFragments } from './sensitive-text.mjs'
 
 const genericIntentTokens = new Set([
@@ -86,7 +85,7 @@ export function limitResumeMarkdown (candidateProfile, maxLength = 8000) {
 }
 
 function readPrimaryResume () {
-  const resumes = readConfigFile('resumes.json')
+  const resumes = readRuntimeConfigFile('resumes.json')
   return Array.isArray(resumes) ? resumes[0] ?? null : null
 }
 

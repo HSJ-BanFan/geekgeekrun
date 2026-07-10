@@ -39,7 +39,7 @@ import {
 import { appendAuditLog, buildAuditRecord, createRunId } from '../src/audit-log.mjs'
 
 const argv = minimist(process.argv.slice(2), {
-  boolean: ['from-browser', 'headless', 'llm', 'confirm', 'refresh', 'include-jd', 'analyze', 'plan-only'],
+  boolean: ['from-browser', 'headless', 'llm', 'confirm', 'refresh', 'include-jd', 'analyze', 'plan-only', 'allow-remote-cdp'],
   string: [
     'job',
     'title',
@@ -81,7 +81,13 @@ try {
   const result = await dispatch(command, argv)
   writeJson(result)
 } catch (err) {
-  writeJson({ ok: false, error: err?.message ?? String(err), stack: argv.debug ? err?.stack : undefined })
+  writeJson({
+    ok: false,
+    command: command ?? null,
+    reasonCode: err?.reasonCode ?? 'INTERNAL_ERROR',
+    error: err?.message ?? String(err),
+    stack: argv.debug ? err?.stack : undefined,
+  })
   process.exit(1)
 }
 
@@ -349,6 +355,7 @@ async function recentApplications (argv) {
     headless: argv.headless,
     browserUrl: argv['browser-url'],
     cdpPort: argv['cdp-port'],
+    allowRemoteCdp: argv['allow-remote-cdp'],
   })
   if (!result.ok) process.exitCode = 1
   return result
@@ -369,6 +376,7 @@ async function marketJobs (argv) {
     headless: argv.headless,
     browserUrl: argv['browser-url'],
     cdpPort: argv['cdp-port'],
+    allowRemoteCdp: argv['allow-remote-cdp'],
   })
   if (!result.ok) process.exitCode = 1
   return result
@@ -1165,6 +1173,15 @@ function usage () {
   return {
     ok: true,
     commands: [
+      'ggr --version',
+      'ggr doctor [--require-browser]',
+      'ggr setup [--offline-archive file|--system-browser file]',
+      'ggr setup login|repair|reset-profile --confirm',
+      'ggr config path|init|validate',
+      'ggr config import-desktop --desktop-config-root directory',
+      'ggr config secret set|status|delete --name name',
+      'ggr update check',
+      'ggr agent <sidecar-command>',
       'ggr snapshot',
       'ggr capability-profile [--refresh]',
       'ggr extract-job --job job.json',

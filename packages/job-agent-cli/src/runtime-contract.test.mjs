@@ -122,6 +122,10 @@ test('ggr doctor --require-browser passes when installed browser configuration p
       path.join(runtimeHome, 'browser', 'browser.json'),
       JSON.stringify({ executablePath: browserExecutable })
     )
+    fs.writeFileSync(
+      path.join(runtimeHome, 'browser', 'session.json'),
+      JSON.stringify({ status: 'ready', checkedAt: '2026-07-10T00:00:00.000Z' })
+    )
 
     const { stdout } = await runGgr(['doctor', '--require-browser'], { cwd, env })
     const output = JSON.parse(stdout)
@@ -223,17 +227,122 @@ test('ggr doctor rejects a manifest that omits the required sidecar feature', as
   })
 })
 
-test('installed mode fails unsupported legacy commands without touching desktop or runtime state', async () => {
+test('installed mode exposes the existing Node CLI command surface through isolated configuration', async () => {
   await withInstalledFixture(async ({ cwd, env, runtimeHome, desktopHome }) => {
+    const { stdout, stderr } = await runGgr(['snapshot'], { cwd, env })
+    const output = JSON.parse(stdout)
+
+    assert.equal(stderr, '')
+    assert.equal(output.ok, true)
+    assert.equal(output.command, 'snapshot')
+    assert.equal(output.storageFilePath, path.join(runtimeHome, 'data'))
+    assert.equal(fs.existsSync(desktopHome), false)
+  })
+})
+
+test('installed config path, init, and validate provide a discoverable isolated configuration workflow', async () => {
+  await withInstalledFixture(async ({ cwd, env, runtimeHome, desktopHome }) => {
+    const pathOutput = JSON.parse((await runGgr(['config', 'path'], { cwd, env })).stdout)
+
+    assert.equal(pathOutput.ok, true)
+    assert.equal(pathOutput.command, 'config')
+    assert.equal(pathOutput.action, 'path')
+    assert.equal(pathOutput.configRoot, path.join(runtimeHome, 'config'))
+    assert.equal(fs.existsSync(runtimeHome), false)
+
+    const initOutput = JSON.parse((await runGgr(['config', 'init'], { cwd, env })).stdout)
+
+    assert.equal(initOutput.ok, true)
+    assert.equal(initOutput.action, 'init')
+    assert.equal(initOutput.created, true)
+    assert.equal(fs.existsSync(path.join(runtimeHome, 'config', 'operator.json')), true)
+    assert.equal(fs.existsSync(path.join(runtimeHome, 'config', 'boss.json')), true)
+    assert.equal(fs.existsSync(path.join(runtimeHome, 'config', 'llm.json')), true)
+
+    const validateOutput = JSON.parse((await runGgr(['config', 'validate'], { cwd, env })).stdout)
+
+    assert.equal(validateOutput.ok, true)
+    assert.equal(validateOutput.action, 'validate')
+    assert.equal(validateOutput.status, 'ready')
+    assert.equal(validateOutput.reasonCode, null)
+    assert.equal(fs.existsSync(desktopHome), false)
+  })
+})
+
+test('desktop configuration import is explicit and strips secrets and mutable desktop state', async () => {
+  await withInstalledFixture(async ({ cwd, env, runtimeHome, desktopHome }) => {
+    const desktopConfigRoot = path.join(desktopHome, '.geekgeekrun', 'config')
+    const desktopStorageRoot = path.join(desktopHome, '.geekgeekrun', 'storage')
+    fs.mkdirSync(desktopConfigRoot, { recursive: true })
+    fs.mkdirSync(desktopStorageRoot, { recursive: true })
+    fs.writeFileSync(path.join(desktopConfigRoot, 'boss.json'), JSON.stringify({ jobSourceList: [] }))
+    fs.writeFileSync(path.join(desktopConfigRoot, 'resumes.json'), JSON.stringify([{ name: 'safe profile' }]))
+    fs.writeFileSync(path.join(desktopConfigRoot, 'llm.json'), JSON.stringify([{
+      model: 'gpt-test',
+      providerCompleteApiUrl: 'https://example.invalid/v1/chat/completions',
+      providerApiSecret: 'CANARY_DESKTOP_LLM_SECRET',
+      credentialRef: 'windows-credential:DesktopApp/shared-secret',
+    }]))
+    fs.writeFileSync(path.join(desktopStorageRoot, 'boss-cookies.json'), 'CANARY_DESKTOP_COOKIE')
+
+    const { stdout } = await runGgr([
+      'config',
+      'import-desktop',
+      '--desktop-config-root',
+      desktopConfigRoot,
+    ], { cwd, env })
+    const output = JSON.parse(stdout)
+
+    assert.equal(output.ok, true)
+    assert.equal(output.action, 'import-desktop')
+    assert.deepEqual(output.imported, ['boss.json', 'resumes.json', 'llm.json'])
+    const importedText = [
+      'boss.json',
+      'resumes.json',
+      'llm.json',
+      'operator.json',
+    ].map(fileName => fs.readFileSync(path.join(runtimeHome, 'config', fileName), 'utf8')).join('\n')
+    assert.doesNotMatch(importedText, /CANARY_DESKTOP_LLM_SECRET/)
+    assert.doesNotMatch(importedText, /DesktopApp\/shared-secret/)
+    assert.equal(fs.existsSync(path.join(runtimeHome, 'browser', 'boss-cookies.json')), false)
+    assert.equal(fs.existsSync(path.join(runtimeHome, 'tokens')), false)
+    assert.equal(fs.readFileSync(path.join(desktopStorageRoot, 'boss-cookies.json'), 'utf8'), 'CANARY_DESKTOP_COOKIE')
+  })
+})
+
+test('installed setup can explicitly select a system browser without LLM or desktop state', async () => {
+  await withInstalledFixture(async ({ cwd, env, runtimeHome, desktopHome }) => {
+    const setupRun = await runGgr([
+      'setup',
+      '--system-browser',
+      process.execPath,
+      '--allow-unsupported-system-browser',
+      '--skip-login',
+    ], { cwd, env })
+    const setup = JSON.parse(setupRun.stdout)
+
+    assert.equal(setup.ok, true)
+    assert.equal(setup.command, 'setup')
+    assert.equal(setup.action, 'provision')
+    assert.equal(setup.browser.selectionMode, 'system-explicit')
+    assert.equal(setup.browser.executablePath, process.execPath)
+    assert.equal(setup.session.status, 'not-checked')
+    assert.match(setupRun.stderr, /system browser/i)
+    assert.equal(fs.existsSync(path.join(runtimeHome, 'browser', 'browser.json')), true)
+    assert.equal(fs.existsSync(desktopHome), false)
+
+    const doctor = JSON.parse((await runGgr(['doctor'], { cwd, env })).stdout)
+    assert.equal(doctor.ok, true)
+    assert.equal(doctor.checks.browser.ready, true)
+    assert.equal(doctor.checks.bossSession.ready, false)
+
     await assert.rejects(
-      runGgr(['snapshot'], { cwd, env }),
+      runGgr(['doctor', '--require-browser'], { cwd, env }),
       error => {
-        const output = JSON.parse(error.stdout)
-        assert.equal(output.ok, false)
-        assert.equal(output.command, 'snapshot')
-        assert.equal(output.reasonCode, 'INSTALLED_COMMAND_NOT_AVAILABLE')
-        assert.equal(fs.existsSync(runtimeHome), false)
-        assert.equal(fs.existsSync(desktopHome), false)
+        const strict = JSON.parse(error.stdout)
+        assert.equal(strict.reasonCode, 'BOSS_SESSION_NOT_READY')
+        assert.equal(strict.checks.browser.ready, true)
+        assert.equal(strict.checks.bossSession.ready, false)
         return true
       }
     )

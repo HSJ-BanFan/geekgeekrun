@@ -8,7 +8,10 @@ on:
       - "CONTEXT.md"
       - "docs/adr/**"
       - "docs/issues/**"
+      - "docs/job-agent/**"
+      - "docs/ci/**"
       - "docs/prd/**"
+      - "installer/**"
       - "package.json"
       - "packages/geek-auto-start-chat-with-boss/**"
       - "packages/job-agent-cli/**"
@@ -29,7 +32,10 @@ on:
       - "CONTEXT.md"
       - "docs/adr/**"
       - "docs/issues/**"
+      - "docs/job-agent/**"
+      - "docs/ci/**"
       - "docs/prd/**"
+      - "installer/**"
       - "package.json"
       - "packages/geek-auto-start-chat-with-boss/**"
       - "packages/job-agent-cli/**"
@@ -102,7 +108,7 @@ jobs:
         run: python -m pytest
 
   job-agent-portable-windows:
-    name: job-agent-portable-windows
+    name: job-agent-distribution-windows
     runs-on: windows-2022
     needs:
       - job-agent-cli
@@ -138,9 +144,24 @@ jobs:
       - name: Build and smoke-test portable bundle
         run: pnpm build:job-agent-portable
 
-      - name: Upload portable bundle
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build per-user installer
+        run: pnpm build:job-agent-installer
+
+      - name: Smoke-test install and uninstall lifecycle
+        shell: powershell
+        run: |
+          $installer = Get-ChildItem artifacts/job-agent-installer/*.exe | Select-Object -First 1
+          if (-not $installer) { throw "Job Agent installer was not built" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-test-job-agent-installer.ps1 -InstallerPath $installer.FullName
+
+      - name: Upload Windows distribution
         uses: actions/upload-artifact@v4
         with:
           name: geekgeekrun-job-agent-windows-x64
-          path: artifacts/job-agent-portable/*.zip
+          path: |
+            artifacts/job-agent-portable/*.zip
+            artifacts/job-agent-installer/*.exe
           if-no-files-found: error

@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { resolveCityCode } from './city-codes.mjs'
 import { getRuntimeContext } from './runtime-context.mjs'
+import { validateCdpEndpoint } from './browser-runtime.mjs'
 
 const commandName = 'market-jobs'
 const artifactSchemaVersion = 'market-jobs.v1'
@@ -33,6 +34,7 @@ export async function runMarketJobs ({
   headless = false,
   browserUrl = '',
   cdpPort = '',
+  allowRemoteCdp = false,
   now = new Date(),
 } = {}) {
   if (!planOnly && !fromBrowser) {
@@ -81,9 +83,9 @@ export async function runMarketJobs ({
   })
 
   if (!planOnly) {
-    const opened = await openMarketJobsBrowser({ headless, browserUrl, cdpPort })
+    const opened = await openMarketJobsBrowser({ headless, browserUrl, cdpPort, allowRemoteCdp })
     try {
-      return await runMarketJobsOnOpenPage(opened.page, {
+      const result = await runMarketJobsOnOpenPage(opened.page, {
         keywords: marketKeywords,
         cities: resolvedCities,
         limit: limitResult.limit,
@@ -93,6 +95,7 @@ export async function runMarketJobs ({
         analysisOutputPath,
         now,
       })
+      return { ...result, browserConnection: opened.connection }
     } finally {
       if (opened.shouldClose) await opened.browser?.close?.().catch(() => {})
     }
@@ -512,20 +515,35 @@ function getMarketJobObservationRank (rawJob, fallbackRank) {
   return Number.isFinite(sourceRank) && sourceRank > 0 ? sourceRank : fallbackRank
 }
 
-async function openMarketJobsBrowser ({ headless = false, browserUrl = '', cdpPort = '' } = {}) {
+async function openMarketJobsBrowser ({
+  headless = false,
+  browserUrl = '',
+  cdpPort = '',
+  allowRemoteCdp = false,
+} = {}) {
   const endpoint = browserUrl || (cdpPort ? `http://127.0.0.1:${cdpPort}` : '')
   if (endpoint) {
+    const validated = validateCdpEndpoint(endpoint, { allowRemote: allowRemoteCdp })
     const { default: puppeteer } = await import('puppeteer')
-    const connectOptions = /^wss?:\/\//i.test(endpoint)
-      ? { browserWSEndpoint: endpoint }
-      : { browserURL: endpoint }
+    const connectOptions = /^wss?:\/\//i.test(validated.endpoint)
+      ? { browserWSEndpoint: validated.endpoint }
+      : { browserURL: validated.endpoint }
     const browser = await puppeteer.connect(connectOptions)
     const pages = await browser.pages()
     const page = pages.find(item => item.url?.().includes('zhipin.com')) ?? pages[0] ?? await browser.newPage()
-    return { browser, page, shouldClose: false }
+    return {
+      browser,
+      page,
+      shouldClose: false,
+      connection: { mode: validated.connectionMode, highRisk: validated.highRisk },
+    }
   }
   const { openBrowser } = await import('./browser-actions.mjs')
-  return { ...(await openBrowser({ headless })), shouldClose: true }
+  return {
+    ...(await openBrowser({ headless })),
+    shouldClose: true,
+    connection: { mode: 'managed-profile', highRisk: false },
+  }
 }
 
 async function openMarketJobsSearchPage (page, { keyword, cityCode, settleMs = 5000 }) {

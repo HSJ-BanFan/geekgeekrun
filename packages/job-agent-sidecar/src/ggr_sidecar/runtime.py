@@ -232,6 +232,18 @@ def sidecar_version() -> str:
         return FROZEN_DISTRIBUTION_VERSION or _source_distribution_version()
 
 
+def runtime_temp_root(
+    *,
+    env: Mapping[str, str] | None = None,
+) -> Path | None:
+    runtime_env = os.environ if env is None else env
+    if runtime_env.get("GGR_JOB_AGENT_MODE") != "installed":
+        return None
+    configured_home = runtime_env.get("GGR_JOB_AGENT_HOME", "").strip()
+    runtime_home = Path(configured_home) if configured_home else Path.home() / ".geekgeekrun-job-agent"
+    return runtime_home / "temp"
+
+
 def _source_distribution_version() -> str:
     pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
     try:

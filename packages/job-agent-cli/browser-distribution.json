@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "job-agent-browser-distribution.v1",
+  "product": "chrome-for-testing",
+  "platform": "win64",
+  "version": "140.0.7339.80",
+  "url": "https://storage.googleapis.com/chrome-for-testing-public/140.0.7339.80/win64/chrome-win64.zip",
+  "sha256": "92c2de5845e3d392169c1c1e179779c242df8dd1982464b16c29bd8f1cec3ffd",
+  "archiveRoot": "chrome-win64",
+  "executableRelativePath": "chrome-win64/chrome.exe"
+}

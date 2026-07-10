@@ -8,12 +8,25 @@ import { promisify } from 'node:util'
 
 import {
   assertMatchingDistributionVersions,
+  assertBrowserCompatibility,
   finalizePortableBundle,
   materializeNodeApp,
+  sha256File,
   writeFrozenSidecarVersionModule,
 } from './job-agent-portable.mjs'
 
 const execFileAsync = promisify(execFile)
+
+test('portable archive hashing does not depend on PowerShell command auto-loading', () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ggr-portable-hash-'))
+  const filePath = path.join(fixtureRoot, 'archive.zip')
+  fs.writeFileSync(filePath, 'portable archive fixture\n')
+
+  assert.equal(
+    sha256File(filePath),
+    '740cd25913fcb1f277fdf3fcbd9c2c37d484e4e234d0b39ab65c14e9bc5bf2d5'
+  )
+})
 
 test('portable build rejects mismatched CLI and sidecar distribution versions', () => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ggr-portable-versions-'))
@@ -32,6 +45,24 @@ test('portable build rejects mismatched CLI and sidecar distribution versions', 
       sidecarPyprojectPath,
     }),
     /DISTRIBUTION_VERSION_MISMATCH.*CLI 0\.1\.1.*distribution 0\.1\.0/
+  )
+})
+
+test('portable build rejects a managed browser version that differs from the deployed Puppeteer runtime', () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ggr-browser-compatibility-'))
+  const browserMetadataPath = path.join(fixtureRoot, 'browser-distribution.json')
+  const revisionsPath = path.join(fixtureRoot, 'revisions.js')
+  fs.writeFileSync(browserMetadataPath, JSON.stringify({ version: '140.0.7339.80' }))
+  fs.writeFileSync(revisionsPath, "export const PUPPETEER_REVISIONS = { chrome: '141.0.0.0' }\n")
+
+  assert.throws(
+    () => assertBrowserCompatibility({ browserMetadataPath, revisionsPath }),
+    /BROWSER_VERSION_MISMATCH.*140\.0\.7339\.80.*141\.0\.0\.0/
+  )
+  fs.writeFileSync(revisionsPath, "export const PUPPETEER_REVISIONS = { chrome: '140.0.7339.80' }\n")
+  assert.equal(
+    assertBrowserCompatibility({ browserMetadataPath, revisionsPath }),
+    '140.0.7339.80'
   )
 })
 
@@ -181,6 +212,8 @@ test('Node app materialization replaces package links with ordinary files and cu
   fs.mkdirSync(transitiveStoreRoot, { recursive: true })
   fs.mkdirSync(virtualHoistRoot, { recursive: true })
   fs.writeFileSync(path.join(sourceRoot, 'entry.mjs'), 'export const entry = true\n')
+  fs.mkdirSync(path.join(sourceRoot, 'artifacts', 'job-agent-portable'), { recursive: true })
+  fs.writeFileSync(path.join(sourceRoot, 'artifacts', 'job-agent-portable', 'build-only.txt'), 'exclude me\n')
   fs.writeFileSync(path.join(packageStoreRoot, 'index.js'), 'module.exports = true\n')
   fs.writeFileSync(path.join(transitiveStoreRoot, 'index.js'), 'module.exports = "transitive"\n')
   fs.symlinkSync(packageStoreRoot, packageLink, 'junction')
@@ -202,6 +235,7 @@ test('Node app materialization replaces package links with ordinary files and cu
   )
   assert.equal(fs.existsSync(path.join(destinationRoot, 'node_modules', 'root-app')), false)
   assert.equal(fs.existsSync(path.join(destinationRoot, 'node_modules', 'fixture', 'cycle')), false)
+  assert.equal(fs.existsSync(path.join(destinationRoot, 'artifacts')), false)
   assert.equal(findReparsePoints(destinationRoot).length, 0)
 })
 

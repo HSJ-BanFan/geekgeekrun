@@ -19,7 +19,7 @@ from .approval import (
     missing_approval_trace,
     normalize_approval_decision,
 )
-from .runtime import CliRuntime, resolve_cli_runtime
+from .runtime import CliRuntime, resolve_cli_runtime, runtime_temp_root
 from .schemas import ApprovalTraceMetadata, FlexibleCliModel, ValidationFailure
 from .subprocess_runner import CompletedRunner
 
@@ -333,7 +333,13 @@ def run_single_job_application_loop(
     def record(result: FineGrainedCliToolResult) -> None:
         tool_calls.append(_trace_from_tool_result(result, audit_file=audit_file))
 
-    with tempfile.TemporaryDirectory(prefix="ggr-sidecar-loop-") as temp_dir_name:
+    isolated_temp_root = runtime_temp_root()
+    if isolated_temp_root is not None:
+        isolated_temp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix="ggr-sidecar-loop-",
+        dir=isolated_temp_root,
+    ) as temp_dir_name:
         temp_dir = Path(temp_dir_name)
         extracted_job_file = temp_dir / "job.json"
         final_decision_file = temp_dir / "final-decision.json"

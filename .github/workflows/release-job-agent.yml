@@ -1,0 +1,147 @@
+name: Release Job Agent
+
+on:
+  push:
+    tags:
+      - "job-agent-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release-job-agent-windows:
+    name: release-job-agent-windows-x64
+    runs-on: windows-2022
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: "true"
+    steps:
+      - name: Checkout immutable release tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag and distribution version
+        id: version
+        shell: powershell
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if ($tag -notmatch '^job-agent-v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$') {
+            throw "Job Agent releases require a job-agent-v* tag"
+          }
+          $version = $Matches[1]
+          $metadata = Get-Content -Raw packages/job-agent-cli/distribution-metadata.json | ConvertFrom-Json
+          if ([string]$metadata.distributionVersion -ne $version) {
+            throw "Tag version $version does not match distribution version $($metadata.distributionVersion)"
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.16.0
+          cache: pnpm
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: packages/job-agent-sidecar/pyproject.toml
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check Node CLI
+        run: pnpm --filter @geekgeekrun/job-agent-cli check
+
+      - name: Test Node CLI
+        run: pnpm --filter @geekgeekrun/job-agent-cli test
+
+      - name: Install and test Python sidecar
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "packages/job-agent-sidecar[test]"
+          python -m pytest packages/job-agent-sidecar/tests
+
+      - name: Test Windows distribution tooling
+        run: pnpm test:job-agent-portable
+
+      - name: Build portable bundle
+        run: pnpm build:job-agent-portable
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        run: pnpm build:job-agent-installer
+
+      - name: Run clean installed-product lifecycle gate
+        shell: powershell
+        run: |
+          $installer = Get-ChildItem artifacts/job-agent-installer/*.exe | Select-Object -First 1
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-test-job-agent-installer.ps1 -InstallerPath $installer.FullName
+
+      - name: Require and apply Authenticode for stable releases
+        if: ${{ !startsWith(github.ref_name, 'job-agent-v0.') }}
+        shell: powershell
+        env:
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if (-not $env:WINDOWS_CERTIFICATE_BASE64 -or -not $env:WINDOWS_CERTIFICATE_PASSWORD) {
+            throw "Stable Job Agent releases require Authenticode signing credentials"
+          }
+          $certificatePath = Join-Path $env:RUNNER_TEMP "job-agent-signing.pfx"
+          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64))
+          $installer = Get-ChildItem artifacts/job-agent-installer/*.exe | Select-Object -First 1
+          $signTool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signTool) { throw "signtool.exe was not found" }
+          & $signTool.FullName sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $certificatePath /p $env:WINDOWS_CERTIFICATE_PASSWORD $installer.FullName
+          if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed" }
+          & $signTool.FullName verify /pa /all $installer.FullName
+          if ($LASTEXITCODE -ne 0) { throw "Authenticode verification failed" }
+          Remove-Item -LiteralPath $certificatePath -Force
+
+      - name: Write SHA-256 checksums
+        shell: powershell
+        run: |
+          $files = @(
+            Get-ChildItem artifacts/job-agent-installer/*.exe
+            Get-ChildItem artifacts/job-agent-portable/*.zip
+          )
+          $lines = foreach ($file in $files) {
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant()
+            "$hash *$($file.Name)"
+          }
+          $lines | Set-Content -LiteralPath artifacts/SHA256SUMS.txt -Encoding ascii
+
+      - name: Attest release provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            artifacts/job-agent-installer/*.exe
+            artifacts/job-agent-portable/*.zip
+            artifacts/SHA256SUMS.txt
+
+      - name: Publish Job Agent release
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ startsWith(github.ref_name, 'job-agent-v0.') }}
+          generate_release_notes: true
+          body: |
+            GeekGeekRun Job Agent ${{ steps.version.outputs.version }}
+
+            Supported target: Windows x64, installed per current user without administrator rights.
+            This release does not claim macOS or Linux support.
+          files: |
+            artifacts/job-agent-installer/*.exe
+            artifacts/job-agent-portable/*.zip
+            artifacts/SHA256SUMS.txt

@@ -1,11 +1,36 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { readConfigFile, readStorageFile, storageFilePath } from '@geekgeekrun/geek-auto-start-chat-with-boss/runtime-file-utils.mjs'
+import { getRuntimeContext } from './runtime-context.mjs'
+import { createWindowsCredentialStore } from './credential-store.mjs'
+
+const initialRuntimeContext = getRuntimeContext()
+const sourceRuntimeFiles = initialRuntimeContext.mode === 'source'
+  ? await import('@geekgeekrun/geek-auto-start-chat-with-boss/runtime-file-utils.mjs')
+  : null
+const sourceStorageFilePath = sourceRuntimeFiles?.storageFilePath ?? initialRuntimeContext.dataRoot
 
 export function loadRuntimeConfig () {
-  const boss = readConfigFile('boss.json') ?? {}
-  const llm = readConfigFile('llm.json') ?? []
-  return { boss, llm, storageFilePath }
+  const runtimeContext = getRuntimeContext()
+  if (runtimeContext.mode === 'installed') {
+    const boss = readJsonIfPresent(path.join(runtimeContext.configRoot, 'boss.json'), {})
+    const operator = readJsonIfPresent(path.join(runtimeContext.configRoot, 'operator.json'), {})
+    const llm = resolveInstalledLlmSecrets(
+      readJsonIfPresent(path.join(runtimeContext.configRoot, 'llm.json'), []),
+      operator
+    )
+    return { boss, llm, storageFilePath: runtimeContext.dataRoot }
+  }
+  const boss = sourceRuntimeFiles.readConfigFile('boss.json') ?? {}
+  const llm = sourceRuntimeFiles.readConfigFile('llm.json') ?? []
+  return { boss, llm, storageFilePath: sourceStorageFilePath }
+}
+
+export function readRuntimeConfigFile (fileName, fallback = null) {
+  const runtimeContext = getRuntimeContext()
+  if (runtimeContext.mode === 'installed') {
+    return readJsonIfPresent(path.join(runtimeContext.configRoot, fileName), fallback)
+  }
+  return sourceRuntimeFiles.readConfigFile(fileName) ?? fallback
 }
 
 export function getEnabledRecallKeywords (bossConfig) {
@@ -38,29 +63,45 @@ export function getResumeImagePath (bossConfig) {
 }
 
 export function getBrowserPath () {
-  const recordPath = path.join(storageFilePath, 'last-used-browser-record')
+  const runtimeContext = getRuntimeContext()
+  if (runtimeContext.mode === 'installed') {
+    return String(readJsonIfPresent(path.join(runtimeContext.browserRoot, 'browser.json'), {})?.executablePath ?? '').trim()
+  }
+  const recordPath = path.join(sourceStorageFilePath, 'last-used-browser-record')
   if (!fs.existsSync(recordPath)) return ''
   return fs.readFileSync(recordPath, 'utf8').trim().split(/\r?\n/)[0] ?? ''
 }
 
 export function getJobAgentBrowserProfileDir () {
-  const profileDir = path.join(storageFilePath, 'job-agent-chrome-profile')
+  const runtimeContext = getRuntimeContext()
+  const profileDir = runtimeContext.mode === 'installed'
+    ? path.join(runtimeContext.browserRoot, 'profile')
+    : path.join(sourceStorageFilePath, 'job-agent-chrome-profile')
   fs.mkdirSync(profileDir, { recursive: true })
   return profileDir
 }
 
 export function getAuditLogPath () {
-  return path.join(storageFilePath, 'job-agent-audit.jsonl')
+  const runtimeContext = getRuntimeContext()
+  return runtimeContext.mode === 'installed'
+    ? path.join(runtimeContext.auditRoot, 'job-agent-audit.jsonl')
+    : path.join(sourceStorageFilePath, 'job-agent-audit.jsonl')
 }
 
 export function getAuthorizationTokenStorePath () {
-  return path.join(storageFilePath, 'job-agent-authorization-tokens.json')
+  const runtimeContext = getRuntimeContext()
+  return runtimeContext.mode === 'installed'
+    ? path.join(runtimeContext.tokenRoot, 'application-authorization-tokens.json')
+    : path.join(sourceStorageFilePath, 'job-agent-authorization-tokens.json')
 }
 
 export function readBrowserState () {
+  if (getRuntimeContext().mode === 'installed') {
+    return { cookies: [], localStorage: {} }
+  }
   return {
-    cookies: readStorageFile('boss-cookies.json'),
-    localStorage: readStorageFile('boss-local-storage.json'),
+    cookies: sourceRuntimeFiles.readStorageFile('boss-cookies.json'),
+    localStorage: sourceRuntimeFiles.readStorageFile('boss-local-storage.json'),
   }
 }
 
@@ -76,4 +117,45 @@ export function getEnabledLlmConfig (llmConfig) {
     String(item?.providerApiSecret ?? item?.apiKey ?? '').trim() &&
     String(item?.model ?? '').trim()
   ) ?? null
+}
+
+function readJsonIfPresent (filePath, fallback) {
+  if (!fs.existsSync(filePath)) return fallback
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'))
+  } catch {
+    return fallback
+  }
+}
+
+function resolveInstalledLlmSecrets (llmConfig, operatorConfig) {
+  const credentialRefs = isRecord(operatorConfig?.credentials) ? operatorConfig.credentials : {}
+  const availableRefs = Object.values(credentialRefs).filter(value => typeof value === 'string')
+  if (!availableRefs.length) return llmConfig
+  const store = createWindowsCredentialStore()
+  const list = Array.isArray(llmConfig)
+    ? llmConfig
+    : Array.isArray(llmConfig?.configList)
+      ? llmConfig.configList
+      : []
+  const resolved = list.map(item => {
+    if (!isRecord(item) || item.providerApiSecret || item.apiKey) return item
+    const credentialName = String(item.credentialName ?? '').trim()
+    const credentialRef = String(
+      item.credentialRef ??
+      (credentialName ? credentialRefs[credentialName] : '') ??
+      (availableRefs.length === 1 ? availableRefs[0] : '')
+    ).trim()
+    const target = credentialRef.startsWith('windows-credential:')
+      ? credentialRef.slice('windows-credential:'.length)
+      : ''
+    if (!target) return item
+    const result = store.get({ target })
+    return result.ok ? { ...item, providerApiSecret: result.secret } : item
+  })
+  return Array.isArray(llmConfig) ? resolved : { ...llmConfig, configList: resolved }
+}
+
+function isRecord (value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }

@@ -2329,6 +2329,10 @@ def review_recent_application_preferences(
 
 
 def default_public_db_path() -> Path:
+    if os.environ.get("GGR_JOB_AGENT_MODE") == "installed":
+        runtime_home = os.environ.get("GGR_JOB_AGENT_HOME", "").strip()
+        root = Path(runtime_home) if runtime_home else Path.home() / ".geekgeekrun-job-agent"
+        return root / "data" / "public.db"
     return Path.home() / ".geekgeekrun" / "storage" / "public.db"
 
 

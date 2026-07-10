@@ -9,7 +9,9 @@
     "start": "node ./packages/run-core-of-geek-auto-start-chat-with-boss/daemon-main.mjs",
     "test:job-agent-portable": "node --test scripts/job-agent-portable.test.mjs",
     "build:job-agent-portable": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-job-agent-portable.ps1",
-    "smoke:job-agent-portable": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-test-job-agent-portable.ps1"
+    "smoke:job-agent-portable": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-test-job-agent-portable.ps1",
+    "build:job-agent-installer": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-job-agent-installer.ps1",
+    "smoke:job-agent-installer": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-test-job-agent-installer.ps1"
   },
   "author": "geekgeekrun",
   "license": "ISC",

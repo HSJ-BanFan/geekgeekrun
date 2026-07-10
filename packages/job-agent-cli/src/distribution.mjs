@@ -39,11 +39,14 @@ export function runDoctor (runtimeContext, { requireBrowser = false } = {}) {
   const browser = diagnoseBrowser(runtimeContext)
   const bossSession = diagnoseBossSession(runtimeContext)
   const installationReady = installation.ready && sidecar.ready
-  const ok = installationReady && (!requireBrowser || browser.ready)
+  const browserReady = browser.ready && bossSession.ready
+  const ok = installationReady && (!requireBrowser || browserReady)
   const reasonCode = !installationReady
     ? 'INSTALLATION_NOT_READY'
     : requireBrowser && !browser.ready
       ? 'BROWSER_NOT_READY'
+      : requireBrowser && !bossSession.ready
+        ? 'BOSS_SESSION_NOT_READY'
       : null
 
   return {
@@ -236,10 +239,37 @@ function diagnoseBossSession (runtimeContext) {
   const sessionPath = runtimeContext.mode === 'installed'
     ? path.join(runtimeContext.browserRoot, 'session.json')
     : path.join(runtimeContext.browserRoot, 'boss-cookies.json')
-  return {
-    known: fs.existsSync(sessionPath),
-    reasonCode: fs.existsSync(sessionPath) ? null : 'BOSS_SESSION_UNKNOWN',
-    sessionPath,
+  if (!fs.existsSync(sessionPath)) {
+    return {
+      ready: false,
+      known: false,
+      status: 'unknown',
+      reasonCode: 'BOSS_SESSION_UNKNOWN',
+      sessionPath,
+    }
+  }
+  if (runtimeContext.mode !== 'installed') {
+    return { ready: true, known: true, status: 'legacy-state-present', reasonCode: null, sessionPath }
+  }
+  try {
+    const value = JSON.parse(fs.readFileSync(sessionPath, 'utf8'))
+    const ready = value?.status === 'ready'
+    return {
+      ready,
+      known: true,
+      status: String(value?.status ?? 'unknown'),
+      checkedAt: value?.checkedAt ?? null,
+      reasonCode: ready ? null : 'BOSS_SESSION_NOT_READY',
+      sessionPath,
+    }
+  } catch {
+    return {
+      ready: false,
+      known: true,
+      status: 'invalid',
+      reasonCode: 'BOSS_SESSION_STATUS_INVALID',
+      sessionPath,
+    }
   }
 }
 
@@ -384,6 +414,7 @@ function publicRuntimeContext (runtimeContext) {
     runtimeHome: runtimeContext.runtimeHome,
     configRoot: runtimeContext.configRoot,
     browserRoot: runtimeContext.browserRoot,
+    dataRoot: runtimeContext.dataRoot,
     artifactRoot: runtimeContext.artifactRoot,
     auditRoot: runtimeContext.auditRoot,
     tokenRoot: runtimeContext.tokenRoot,

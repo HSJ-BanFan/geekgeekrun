@@ -91,6 +91,20 @@ try {
         $sidecarVersion = Invoke-PortableJson -Command $sidecar -Arguments @("version")
         Assert-Equal $sidecarVersion.distribution.version $manifest.distributionVersion "frozen sidecar version"
 
+        $agentVersion = Invoke-PortableJson -Command $ggr -Arguments @("agent", "version")
+        Assert-Equal $agentVersion.distribution.version $manifest.distributionVersion "ggr agent sidecar dispatch"
+
+        $snapshot = Invoke-PortableJson -Command $ggr -Arguments @("snapshot")
+        Assert-Equal $snapshot.command "snapshot" "installed existing CLI surface"
+        if (-not ([string]$snapshot.storageFilePath).StartsWith($runtimeHome, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "PORTABLE_SMOKE_FAILED: installed snapshot did not use isolated data storage"
+        }
+
+        $configPath = Invoke-PortableJson -Command $ggr -Arguments @("config", "path")
+        if (-not ([string]$configPath.configRoot).StartsWith($runtimeHome, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "PORTABLE_SMOKE_FAILED: installed config path is outside the isolated runtime home"
+        }
+
         $sidecarHelp = Invoke-PortableText -Command $sidecar -Arguments @("--help")
         if ($sidecarHelp -notmatch "(?i)usage:\s+ggr-sidecar") {
             throw "PORTABLE_SMOKE_FAILED: ggr-sidecar --help did not expose the expected command"

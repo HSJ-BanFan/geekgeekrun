@@ -1,7 +1,6 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { storageFilePath } from '@geekgeekrun/geek-auto-start-chat-with-boss/runtime-file-utils.mjs'
 import { completes } from '@geekgeekrun/utils/gpt-request.mjs'
 import {
   getDefaultGreeting,
@@ -11,6 +10,7 @@ import {
 } from './config.mjs'
 import { limitResumeMarkdown, summarizeCandidateProfile } from './candidate-profile.mjs'
 import { extractSensitiveFragments, redactSensitiveFragments } from './sensitive-text.mjs'
+import { getRuntimeContext } from './runtime-context.mjs'
 
 export const CAPABILITY_PROFILE_SCHEMA_VERSION = 'candidate-capability-profile.v1'
 export const CAPABILITY_PROFILE_PROMPT_VERSION = 'candidate-capability-profile.prompt.v1'
@@ -19,9 +19,10 @@ const cacheFileName = 'candidate-capability-profile.json'
 const listLimit = 12
 const summaryListLimit = 8
 const summaryTextLimit = 320
+const defaultStorageFilePath = getRuntimeContext().dataRoot
 
 export function getCapabilityProfileCachePath ({
-  storageDir = storageFilePath,
+  storageDir = defaultStorageFilePath,
   cacheFilePath,
 } = {}) {
   return cacheFilePath || path.join(storageDir, cacheFileName)
@@ -40,7 +41,7 @@ export function readCapabilityProfileCache (options = {}) {
 export function inspectCapabilityProfileCache ({
   bossConfig = {},
   candidateProfile = null,
-  storageDir = storageFilePath,
+  storageDir = defaultStorageFilePath,
   cacheFilePath,
   schemaVersion = CAPABILITY_PROFILE_SCHEMA_VERSION,
   promptVersion = CAPABILITY_PROFILE_PROMPT_VERSION,
@@ -89,7 +90,7 @@ export async function buildOrRefreshCapabilityProfile ({
   candidateProfile = null,
   llmConfig = [],
   forceRefresh = false,
-  storageDir = storageFilePath,
+  storageDir = defaultStorageFilePath,
   cacheFilePath,
   schemaVersion = CAPABILITY_PROFILE_SCHEMA_VERSION,
   promptVersion = CAPABILITY_PROFILE_PROMPT_VERSION,

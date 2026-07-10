@@ -3,7 +3,10 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from ggr_sidecar.application_preferences import review_recent_application_preferences
+from ggr_sidecar.application_preferences import (
+    default_public_db_path,
+    review_recent_application_preferences,
+)
 
 
 def test_review_recent_application_preferences_reads_recent_jobs_and_jd_signals(
@@ -76,6 +79,17 @@ def test_review_recent_application_preferences_reports_missing_db(tmp_path: Path
     assert review.status == "missing_db"
     assert "public_db_missing" in review.warnings
     assert review.sampleSize == 0
+
+
+def test_installed_default_public_db_path_uses_the_isolated_runtime_home(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_home = tmp_path / "job-agent-home"
+    monkeypatch.setenv("GGR_JOB_AGENT_MODE", "installed")
+    monkeypatch.setenv("GGR_JOB_AGENT_HOME", str(runtime_home))
+
+    assert default_public_db_path() == runtime_home / "data" / "public.db"
 
 
 def create_db(path: Path) -> None:

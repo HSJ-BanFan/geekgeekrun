@@ -31,6 +31,21 @@ export function assertMatchingDistributionVersions ({
   return distributionVersion
 }
 
+export function assertBrowserCompatibility ({ browserMetadataPath, revisionsPath }) {
+  const browserVersion = String(readJson(browserMetadataPath)?.version ?? '').trim()
+  const revisions = fs.readFileSync(revisionsPath, 'utf8')
+  const puppeteerVersion = revisions.match(/chrome:\s*['"]([^'"]+)['"]/)?.[1]?.trim() ?? ''
+  if (!browserVersion || !puppeteerVersion) {
+    throw new Error('BROWSER_VERSION_INVALID: browser metadata and Puppeteer revision are required')
+  }
+  if (browserVersion !== puppeteerVersion) {
+    throw new Error(
+      `BROWSER_VERSION_MISMATCH: managed browser ${browserVersion} does not match Puppeteer ${puppeteerVersion}`
+    )
+  }
+  return browserVersion
+}
+
 export function finalizePortableBundle ({
   bundleRoot,
   metadataPath,
@@ -102,7 +117,7 @@ export function finalizePortableBundle ({
     .filter(filePath => filePath !== manifestPath)
     .map(filePath => ({
       path: portablePath(path.relative(resolvedBundleRoot, filePath)),
-      sha256: sha256(filePath),
+      sha256: sha256File(filePath),
     }))
 
   const manifest = {
@@ -194,7 +209,7 @@ function componentRecord ({
     path: portablePath(relativePath),
     distributionVersion,
     ...(runtimeVersion ? { runtimeVersion } : {}),
-    sha256: sha256(filePath),
+    sha256: sha256File(filePath),
   }
 }
 
@@ -267,10 +282,12 @@ function copyMaterializedEntry ({
 
 function excludedDeployDirectory (sourcePath, sourceRoot) {
   const relativePath = portablePath(path.relative(sourceRoot, sourcePath))
-  return relativePath === 'node_modules/.pnpm' || relativePath === 'node_modules/.bin'
+  return relativePath === 'artifacts' ||
+    relativePath === 'node_modules/.pnpm' ||
+    relativePath === 'node_modules/.bin'
 }
 
-function sha256 (filePath) {
+export function sha256File (filePath) {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex')
 }
 
@@ -310,6 +327,20 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     }, null, 2)}\n`)
     process.exit(0)
   }
+  if (process.argv[2] === 'check-browser-compatibility') {
+    const options = parseOptions(process.argv.slice(3))
+    const appRoot = path.resolve(requiredOption(options, 'app-root'))
+    const browserVersion = assertBrowserCompatibility({
+      browserMetadataPath: path.join(appRoot, 'browser-distribution.json'),
+      revisionsPath: path.join(appRoot, 'node_modules', 'puppeteer-core', 'lib', 'esm', 'puppeteer', 'revisions.js'),
+    })
+    process.stdout.write(`${JSON.stringify({
+      ok: true,
+      command: 'check-job-agent-browser-compatibility',
+      browserVersion,
+    }, null, 2)}\n`)
+    process.exit(0)
+  }
   if (process.argv[2] === 'write-sidecar-build-version') {
     const options = parseOptions(process.argv.slice(3))
     const distributionVersion = assertMatchingDistributionVersions({
@@ -326,6 +357,17 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       command: 'write-frozen-sidecar-version',
       distributionVersion,
       outputPath,
+    }, null, 2)}\n`)
+    process.exit(0)
+  }
+  if (process.argv[2] === 'hash-file') {
+    const options = parseOptions(process.argv.slice(3))
+    const filePath = path.resolve(requiredOption(options, 'file'))
+    process.stdout.write(`${JSON.stringify({
+      ok: true,
+      command: 'hash-job-agent-portable-file',
+      filePath,
+      sha256: sha256File(filePath),
     }, null, 2)}\n`)
     process.exit(0)
   }

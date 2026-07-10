@@ -5,11 +5,14 @@ import minimist from 'minimist'
 import { runDoctor, versionReport } from '../src/distribution.mjs'
 import { getRuntimeContext } from '../src/runtime-context.mjs'
 import { dispatchAgent } from '../src/sidecar-dispatch.mjs'
+import { runConfigCommand } from '../src/operator-config.mjs'
+import { runSetupCommand } from '../src/operator-setup.mjs'
+import { runUpdateCommand } from '../src/update-check.mjs'
 
 const rawArgs = process.argv.slice(2)
 const argv = minimist(rawArgs, {
   alias: { v: 'version' },
-  boolean: ['version', 'require-browser', 'plan-only', 'from-browser', 'include-jd', 'analyze', 'headless'],
+  boolean: ['version', 'require-browser', 'plan-only', 'from-browser', 'include-jd', 'analyze', 'headless', 'allow-remote-cdp'],
   string: ['keyword', 'city', 'recall-keyword', 'limit', 'output', 'analysis-output', 'browser-url', 'cdp-port'],
 })
 const [command] = argv._
@@ -21,7 +24,7 @@ try {
   finish({
     ok: false,
     command: command ?? null,
-    reasonCode: 'INTERNAL_ERROR',
+    reasonCode: err?.reasonCode ?? 'INTERNAL_ERROR',
     error: err?.message ?? String(err),
   })
 }
@@ -33,6 +36,18 @@ async function main () {
   }
   if (command === 'doctor') {
     finish(runDoctor(runtimeContext, { requireBrowser: argv['require-browser'] }))
+    return
+  }
+  if (command === 'config') {
+    finish(await runConfigCommand(runtimeContext, rawArgs.slice(1)))
+    return
+  }
+  if (command === 'setup') {
+    finish(await runSetupCommand(runtimeContext, rawArgs.slice(1)))
+    return
+  }
+  if (command === 'update') {
+    finish(await runUpdateCommand(runtimeContext, rawArgs.slice(1)))
     return
   }
   if (command === 'market-jobs' && argv['plan-only']) {
@@ -66,17 +81,6 @@ async function main () {
         error: err?.message ?? String(err),
       })
     }
-    return
-  }
-  if (runtimeContext.mode === 'installed') {
-    finish({
-      ok: false,
-      command: command ?? null,
-      runtimeMode: runtimeContext.mode,
-      reasonCode: 'INSTALLED_COMMAND_NOT_AVAILABLE',
-      error: 'This command has not yet been migrated to the isolated Job Agent runtime context',
-      availableCommands: ['--version', 'doctor', 'market-jobs --plan-only', 'agent'],
-    })
     return
   }
   await import('./ggr-main.mjs')

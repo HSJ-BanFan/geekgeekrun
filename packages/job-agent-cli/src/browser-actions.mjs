@@ -5,6 +5,8 @@ import LaodengPlugin from '@geekgeekrun/puppeteer-extra-plugin-laodeng'
 import AnonymizeUaPlugin from 'puppeteer-extra-plugin-anonymize-ua'
 import { getBrowserPath, getJobAgentBrowserProfileDir, readBrowserState } from './config.mjs'
 import { normalizeJobProfile } from './job-profile.mjs'
+import { acquireBrowserProfileLock, browserRuntimeError } from './browser-runtime.mjs'
+import { getRuntimeContext } from './runtime-context.mjs'
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 let pluginsRegistered = false
@@ -1054,10 +1056,35 @@ function compareBossForChatGuard (expected, actual) {
 export async function openBrowser ({ headless = false } = {}) {
   const browserPath = getBrowserPath()
   if (!browserPath || !fs.existsSync(browserPath)) {
-    throw new Error(`NO_BROWSER:${browserPath}`)
+    throw browserRuntimeError(
+      browserPath ? 'BROWSER_EXECUTABLE_MISSING' : 'BROWSER_NOT_CONFIGURED',
+      browserPath ? 'The configured browser executable is missing' : 'Run ggr setup before using browser commands'
+    )
   }
+  const runtimeContext = getRuntimeContext()
+  const profileLock = runtimeContext.mode === 'installed'
+    ? acquireBrowserProfileLock(runtimeContext)
+    : null
   registerPlugins()
-  const browser = await puppeteerExtra.launch(buildBrowserLaunchOptions({ browserPath, headless }))
+  let browser
+  try {
+    browser = await puppeteerExtra.launch(buildBrowserLaunchOptions({ browserPath, headless }))
+  } catch (error) {
+    profileLock?.release()
+    throw error
+  }
+  const closeBrowser = browser.close.bind(browser)
+  let closed = false
+  browser.close = async (...args) => {
+    if (closed) return
+    closed = true
+    try {
+      return await closeBrowser(...args)
+    } finally {
+      profileLock?.release()
+    }
+  }
+  browser.once?.('disconnected', () => profileLock?.release())
   const page = (await browser.pages())[0] ?? await browser.newPage()
   await configureBossPage(page)
   const { cookies, localStorage } = usePersistentProfile
@@ -1076,7 +1103,7 @@ export async function openBrowser ({ headless = false } = {}) {
       window.localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value))
     }
   }, localStorage).catch(() => {})
-  return { browser, page }
+  return { browser, page, profileLockPath: profileLock?.path ?? null }
 }
 
 export function buildBrowserLaunchOptions ({ browserPath, headless = false } = {}) {

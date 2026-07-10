@@ -1,8 +1,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import puppeteer from 'puppeteer'
-import { storageFilePath } from '@geekgeekrun/geek-auto-start-chat-with-boss/runtime-file-utils.mjs'
 import { openBrowser } from './browser-actions.mjs'
+import { getRuntimeContext } from './runtime-context.mjs'
+import { validateCdpEndpoint } from './browser-runtime.mjs'
 
 const chatPageUrl = 'https://www.zhipin.com/web/geek/chat'
 const artifactSchemaVersion = 'recent-applications.v1'
@@ -19,6 +20,7 @@ export async function runRecentApplications ({
   headless = false,
   browserUrl = '',
   cdpPort = '',
+  allowRemoteCdp = false,
   now = new Date(),
 } = {}) {
   if (!fromBrowser) {
@@ -30,9 +32,9 @@ export async function runRecentApplications ({
     }
   }
 
-  const opened = await openRecentApplicationsBrowser({ headless, browserUrl, cdpPort })
+  const opened = await openRecentApplicationsBrowser({ headless, browserUrl, cdpPort, allowRemoteCdp })
   try {
-    return await runRecentApplicationsOnOpenPage(opened.page, {
+    const result = await runRecentApplicationsOnOpenPage(opened.page, {
       limit,
       includeJd,
       analyze,
@@ -40,6 +42,7 @@ export async function runRecentApplications ({
       analysisOutputPath,
       now,
     })
+    return { ...result, browserConnection: opened.connection }
   } finally {
     if (opened.shouldClose) await opened.browser?.close?.().catch(() => {})
   }
@@ -344,18 +347,33 @@ export function analyzeApplicationPreferences (records) {
   }
 }
 
-async function openRecentApplicationsBrowser ({ headless = false, browserUrl = '', cdpPort = '' } = {}) {
+async function openRecentApplicationsBrowser ({
+  headless = false,
+  browserUrl = '',
+  cdpPort = '',
+  allowRemoteCdp = false,
+} = {}) {
   const endpoint = browserUrl || (cdpPort ? `http://127.0.0.1:${cdpPort}` : '')
   if (endpoint) {
-    const connectOptions = /^wss?:\/\//i.test(endpoint)
-      ? { browserWSEndpoint: endpoint }
-      : { browserURL: endpoint }
+    const validated = validateCdpEndpoint(endpoint, { allowRemote: allowRemoteCdp })
+    const connectOptions = /^wss?:\/\//i.test(validated.endpoint)
+      ? { browserWSEndpoint: validated.endpoint }
+      : { browserURL: validated.endpoint }
     const browser = await puppeteer.connect(connectOptions)
     const pages = await browser.pages()
     const page = pages.find(item => item.url?.().includes('zhipin.com')) ?? pages[0] ?? await browser.newPage()
-    return { browser, page, shouldClose: false }
+    return {
+      browser,
+      page,
+      shouldClose: false,
+      connection: { mode: validated.connectionMode, highRisk: validated.highRisk },
+    }
   }
-  return { ...(await openBrowser({ headless })), shouldClose: true }
+  return {
+    ...(await openBrowser({ headless })),
+    shouldClose: true,
+    connection: { mode: 'managed-profile', highRisk: false },
+  }
 }
 
 async function openChatPage (page) {
@@ -508,7 +526,7 @@ async function writeArtifact (outputPath, artifact) {
 
 function resolveRecentApplicationsOutputPath (outputPath, captureTime) {
   if (outputPath) return path.resolve(outputPath)
-  return path.join(storageFilePath, 'recent-applications', `recent-applications-${fileTimestamp(captureTime)}.json`)
+  return path.join(getRuntimeContext().artifactRoot, 'recent-applications', `recent-applications-${fileTimestamp(captureTime)}.json`)
 }
 
 function resolveAnalysisOutputPath (analysisOutputPath, rawArtifactPath) {

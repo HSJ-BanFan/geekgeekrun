@@ -7,7 +7,19 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from ggr_sidecar.runtime import runtime_temp_root
 from ggr_sidecar.subprocess_runner import run_dry_run_batch
+
+
+def test_installed_runtime_temp_root_is_isolated(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_home = tmp_path / "job-agent-home"
+    monkeypatch.setenv("GGR_JOB_AGENT_MODE", "installed")
+    monkeypatch.setenv("GGR_JOB_AGENT_HOME", str(runtime_home))
+
+    assert runtime_temp_root() == runtime_home / "temp"
 
 
 def test_installed_sidecar_builds_cli_command_from_manifest_not_path(

@@ -138,6 +138,11 @@ try {
         "--source-root", $deployRoot,
         "--destination-root", $appRoot
     )
+    Invoke-Checked -Executable "node" -Arguments @(
+        (Join-Path $repoRoot "scripts\job-agent-portable.mjs"),
+        "check-browser-compatibility",
+        "--app-root", $appRoot
+    )
     Get-ChildItem -LiteralPath (Join-Path $appRoot "src") -File -Filter "*.test.mjs" |
         ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
 
@@ -151,7 +156,12 @@ try {
     if (-not (Test-Path -LiteralPath $resolvedNodeArchive -PathType Leaf)) {
         throw "NODE_ARCHIVE_NOT_FOUND: $resolvedNodeArchive"
     }
-    $actualNodeArchiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $resolvedNodeArchive).Hash.ToLowerInvariant()
+    $hashReport = (Invoke-Checked -Executable "node" -Arguments @(
+        (Join-Path $repoRoot "scripts\job-agent-portable.mjs"),
+        "hash-file",
+        "--file", $resolvedNodeArchive
+    )) | ConvertFrom-Json
+    $actualNodeArchiveHash = [string]$hashReport.sha256
     if ($actualNodeArchiveHash -ne $nodeArchiveSha256) {
         throw "NODE_ARCHIVE_HASH_MISMATCH: expected $nodeArchiveSha256 but found $actualNodeArchiveHash"
     }

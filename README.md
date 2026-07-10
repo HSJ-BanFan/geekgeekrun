@@ -1,5 +1,7 @@
 # 牛人快跑 - GeekGeekRun
 
+> 高级 Agent Operator：独立的 Windows Job Agent CLI 请使用[专用安装与使用指南](docs/job-agent/windows-getting-started.md)。它是自包含产品，不采用下方桌面应用的安装步骤。
+
 一款可以帮助你在BOSS直聘上**自动批量开聊BOSS**的脚本，基于Puppeteer。
 
 与每一位牛人站在一起
