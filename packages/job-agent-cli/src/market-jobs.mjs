@@ -1,9 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import puppeteer from 'puppeteer'
-import { storageFilePath } from '@geekgeekrun/geek-auto-start-chat-with-boss/runtime-file-utils.mjs'
-import { openBrowser } from './browser-actions.mjs'
 import { resolveCityCode } from './city-codes.mjs'
+import { getRuntimeContext } from './runtime-context.mjs'
 
 const commandName = 'market-jobs'
 const artifactSchemaVersion = 'market-jobs.v1'
@@ -525,6 +524,7 @@ async function openMarketJobsBrowser ({ headless = false, browserUrl = '', cdpPo
     const page = pages.find(item => item.url?.().includes('zhipin.com')) ?? pages[0] ?? await browser.newPage()
     return { browser, page, shouldClose: false }
   }
+  const { openBrowser } = await import('./browser-actions.mjs')
   return { ...(await openBrowser({ headless })), shouldClose: true }
 }
 
@@ -1119,7 +1119,7 @@ async function writeArtifact (outputPath, artifact) {
 
 function resolveMarketJobsOutputPath (outputPath, captureTime) {
   if (outputPath) return path.resolve(outputPath)
-  return path.join(storageFilePath, 'market-jobs', `market-jobs-${fileTimestamp(captureTime)}.json`)
+  return path.join(getRuntimeContext().artifactRoot, 'market-jobs', `market-jobs-${fileTimestamp(captureTime)}.json`)
 }
 
 function resolveAnalysisOutputPath (analysisOutputPath, rawArtifactPath) {
