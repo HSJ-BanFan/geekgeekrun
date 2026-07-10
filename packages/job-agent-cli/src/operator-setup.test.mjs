@@ -11,6 +11,8 @@ import {
   runSetupCommand,
 } from './operator-setup.mjs'
 
+const tarExecutable = process.platform === 'win32' ? 'tar.exe' : 'tar'
+
 test('offline managed-browser setup verifies metadata, preserves the profile on repair, and leaves a healthy install intact on mismatch', async () => {
   const runtimeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ggr-browser-setup-'))
   const fixtureRoot = path.join(runtimeHome, 'fixture')
@@ -20,16 +22,21 @@ test('offline managed-browser setup verifies metadata, preserves the profile on 
   const chromeRoot = path.join(archiveContentRoot, 'chrome-win64')
   fs.mkdirSync(chromeRoot, { recursive: true })
   fs.copyFileSync(process.execPath, path.join(chromeRoot, 'chrome.exe'))
-  const archived = spawnSync('tar.exe', ['-c', '-a', '-f', archivePath, '-C', archiveContentRoot, 'chrome-win64'])
+  const archived = spawnSync(tarExecutable, ['-c', '-a', '-f', archivePath, '-C', archiveContentRoot, 'chrome-win64'])
   assert.equal(archived.status, 0)
   writeMetadata(metadataPath, archivePath)
   const runtimeContext = context(runtimeHome)
+  const setupDependencies = {
+    writeProgress: () => {},
+    browserMetadataPath: metadataPath,
+    spawnSyncImpl: spawnTestCommand,
+  }
 
   try {
     const first = await runSetupCommand(runtimeContext, [
       '--offline-archive', archivePath,
       '--skip-login',
-    ], { writeProgress: () => {}, browserMetadataPath: metadataPath })
+    ], setupDependencies)
 
     assert.equal(first.ok, true)
     assert.equal(first.browser.selectionMode, 'managed')
@@ -44,7 +51,7 @@ test('offline managed-browser setup verifies metadata, preserves the profile on 
       'repair',
       '--offline-archive', archivePath,
       '--skip-login',
-    ], { writeProgress: () => {}, browserMetadataPath: metadataPath })
+    ], setupDependencies)
 
     assert.equal(repaired.ok, true)
     assert.equal(fs.readFileSync(profileMarker, 'utf8'), 'preserve-session-profile')
@@ -57,7 +64,7 @@ test('offline managed-browser setup verifies metadata, preserves the profile on 
         'repair',
         '--offline-archive', archivePath,
         '--skip-login',
-      ], { writeProgress: () => {}, browserMetadataPath: metadataPath }),
+      ], setupDependencies),
       error => error.reasonCode === 'BROWSER_ARCHIVE_HASH_MISMATCH'
     )
     assert.equal(fs.readFileSync(path.join(runtimeContext.browserRoot, 'browser.json'), 'utf8'), previousConfiguration)
@@ -99,7 +106,7 @@ test('online managed-browser setup downloads only the pinned metadata URL and ve
   const metadataPath = path.join(runtimeHome, 'source', 'browser-metadata.json')
   fs.mkdirSync(archiveContentRoot, { recursive: true })
   fs.copyFileSync(process.execPath, path.join(archiveContentRoot, 'chrome.exe'))
-  const archived = spawnSync('tar.exe', [
+  const archived = spawnSync(tarExecutable, [
     '-c', '-a', '-f', archivePath, '-C', path.dirname(archiveContentRoot), 'chrome-win64',
   ])
   assert.equal(archived.status, 0)
@@ -112,6 +119,7 @@ test('online managed-browser setup downloads only the pinned metadata URL and ve
     ], {
       writeProgress: () => {},
       browserMetadataPath: metadataPath,
+      spawnSyncImpl: spawnTestCommand,
       fetchImpl: async url => {
         requested.push(url)
         return new Response(fs.readFileSync(archivePath), { status: 200 })
@@ -176,6 +184,10 @@ function context (runtimeHome) {
     browserRoot: path.join(runtimeHome, 'browser'),
     tempRoot: path.join(runtimeHome, 'temp'),
   }
+}
+
+function spawnTestCommand (command, args, options) {
+  return spawnSync(command === 'tar.exe' ? tarExecutable : command, args, options)
 }
 
 function writeMetadata (metadataPath, archivePath) {
